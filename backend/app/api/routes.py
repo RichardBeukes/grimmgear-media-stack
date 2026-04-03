@@ -117,6 +117,214 @@ async def universal_search(q: str = Query(..., min_length=1), type: str = "multi
         return await tmdb.search_multi(q)
 
 
+# ============================================================
+# UPCOMING / POPULAR / ON-DISK — per media type
+# ============================================================
+
+@api_router.get("/upcoming/{media_type}")
+async def get_upcoming(media_type: str):
+    """Fetch upcoming releases from external APIs."""
+    import httpx as _httpx
+    items = []
+    if media_type in ("movie", "movies"):
+        data = await tmdb.upcoming_movies()
+        if data:
+            for m in (data if isinstance(data, list) else data.get("results", []))[:20]:
+                items.append({"title": m.get("title", ""), "date": m.get("release_date", ""),
+                              "year": (m.get("release_date") or "")[:4],
+                              "poster_url": f"https://image.tmdb.org/t/p/w300{m['poster_path']}" if m.get("poster_path") else None,
+                              "overview": (m.get("overview") or "")[:200], "tmdb_id": m.get("id"),
+                              "type": "movie", "source": "TMDB"})
+    elif media_type == "tv":
+        data = await tmdb.trending_tv()
+        if data:
+            for s in (data if isinstance(data, list) else data.get("results", []))[:20]:
+                items.append({"title": s.get("name", ""), "date": s.get("first_air_date", ""),
+                              "year": (s.get("first_air_date") or "")[:4],
+                              "poster_url": f"https://image.tmdb.org/t/p/w300{s['poster_path']}" if s.get("poster_path") else None,
+                              "overview": (s.get("overview") or "")[:200], "tmdb_id": s.get("id"),
+                              "type": "tv", "source": "TMDB"})
+    elif media_type == "music":
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://musicbrainz.org/ws/2/release",
+                    params={"query": "date:[NOW TO NOW+30DAYS]", "fmt": "json", "limit": 20},
+                    headers={"User-Agent": "GrimmGear-Mediarr/1.0 (richard@grimmgear.com)"})
+                if resp.status_code == 200:
+                    for r in resp.json().get("releases", []):
+                        items.append({"title": r.get("title", ""), "date": r.get("date", ""),
+                                      "artist": r.get("artist-credit", [{}])[0].get("name", "") if r.get("artist-credit") else "",
+                                      "type": "music", "source": "MusicBrainz"})
+        except Exception:
+            pass
+    elif media_type in ("book", "books"):
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://openlibrary.org/trending/daily.json", params={"limit": 20})
+                if resp.status_code == 200:
+                    for w in resp.json().get("works", []):
+                        items.append({"title": w.get("title", ""), "author": w.get("author_name", [""])[0] if w.get("author_name") else "",
+                                      "cover_url": f"https://covers.openlibrary.org/b/id/{w['cover_i']}-M.jpg" if w.get("cover_i") else None,
+                                      "type": "book", "source": "OpenLibrary"})
+        except Exception:
+            pass
+    elif media_type in ("comic", "comics"):
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://comicvine.gamespot.com/api/issues/",
+                    params={"format": "json", "sort": "store_date:desc", "limit": 20,
+                            "field_list": "id,name,volume,store_date,image"},
+                    headers={"User-Agent": "GrimmGear-Mediarr/1.0"})
+                if resp.status_code == 200:
+                    for iss in resp.json().get("results", []):
+                        vol = iss.get("volume", {}) or {}
+                        items.append({"title": vol.get("name", "") + " #" + str(iss.get("issue_number", "")),
+                                      "date": iss.get("store_date", ""),
+                                      "cover_url": (iss.get("image") or {}).get("medium_url"),
+                                      "type": "comic", "source": "ComicVine"})
+        except Exception:
+            pass
+    return {"items": items, "media_type": media_type}
+
+
+@api_router.get("/popular/{media_type}")
+async def get_popular(media_type: str):
+    """Fetch popular/trending from external APIs."""
+    items = []
+    if media_type in ("movie", "movies"):
+        data = await tmdb.popular_movies()
+        if data:
+            for m in (data if isinstance(data, list) else data.get("results", []))[:20]:
+                items.append({"title": m.get("title", ""), "date": m.get("release_date", ""),
+                              "rating": m.get("vote_average", 0),
+                              "poster_url": f"https://image.tmdb.org/t/p/w300{m['poster_path']}" if m.get("poster_path") else None,
+                              "overview": (m.get("overview") or "")[:200], "tmdb_id": m.get("id"),
+                              "type": "movie", "source": "TMDB"})
+    elif media_type == "tv":
+        data = await tmdb.trending_tv()
+        if data:
+            for s in (data if isinstance(data, list) else data.get("results", []))[:20]:
+                items.append({"title": s.get("name", ""), "date": s.get("first_air_date", ""),
+                              "rating": s.get("vote_average", 0),
+                              "poster_url": f"https://image.tmdb.org/t/p/w300{s['poster_path']}" if s.get("poster_path") else None,
+                              "overview": (s.get("overview") or "")[:200], "tmdb_id": s.get("id"),
+                              "type": "tv", "source": "TMDB"})
+    elif media_type == "music":
+        from app.services.metadata.musicbrainz import musicbrainz
+        data = await musicbrainz.search_artists("*")
+        if data:
+            for a in data[:20]:
+                items.append({"title": a.get("name", ""), "type": "music", "source": "MusicBrainz"})
+    return {"items": items, "media_type": media_type}
+
+
+@api_router.get("/ondisk/{media_type}")
+async def get_on_disk(media_type: str):
+    """List media files on disk for a given type."""
+    import os
+    type_map = {
+        "movie": (settings.paths.movies_dir, {".mkv",".mp4",".avi",".m4v",".mov",".wmv",".flv",".ts",".webm"}),
+        "tv": (settings.paths.tv_dir, {".mkv",".mp4",".avi",".m4v",".mov",".wmv",".flv",".ts",".webm"}),
+        "music": (settings.paths.music_dir, {".mp3",".flac",".m4a",".ogg",".wav",".aac",".wma",".alac",".opus",".ape"}),
+        "books": (settings.paths.books_dir, {".epub",".mobi",".pdf",".azw3",".fb2",".djvu",".lit",".cbz",".cbr"}),
+        "comics": (settings.paths.media_root / "Comics", {".cbz",".cbr",".cb7",".pdf",".epub"}),
+    }
+    if media_type not in type_map:
+        return {"items": [], "total": 0, "path": ""}
+
+    path, exts = type_map[media_type]
+    if not path.exists():
+        return {"items": [], "total": 0, "path": str(path)}
+
+    items = []
+    folders = {}
+    for item in sorted(path.rglob("*")):
+        if item.is_file() and item.suffix.lower() in exts:
+            folder = str(item.parent.relative_to(path)) if item.parent != path else ""
+            if folder not in folders:
+                folders[folder] = {"name": folder or os.path.basename(str(path)), "files": [], "total_size": 0}
+            folders[folder]["files"].append(item.name)
+            folders[folder]["total_size"] += item.stat().st_size
+
+    folder_list = []
+    for fname, fdata in sorted(folders.items()):
+        folder_list.append({"folder": fdata["name"], "file_count": len(fdata["files"]),
+                            "size": fdata["total_size"], "files": fdata["files"][:10]})
+
+    total_files = sum(f["file_count"] for f in folder_list)
+    total_size = sum(f["size"] for f in folder_list)
+    return {"folders": folder_list, "total_files": total_files, "total_size": total_size,
+            "path": str(path), "media_type": media_type}
+
+
+# ============================================================
+# SMART CALENDAR — auto-fetch upcoming from all enabled modules
+# ============================================================
+
+@api_router.get("/calendar/smart")
+async def smart_calendar(db: AsyncSession = Depends(get_db)):
+    """Calendar that auto-fetches upcoming from TMDB, MusicBrainz, OpenLibrary based on enabled modules."""
+    import httpx as _httpx
+
+    # Check which modules are enabled
+    enabled = {m.name for m in registry.get_enabled()}
+    events = []
+
+    # Movies — TMDB upcoming
+    if "movies" in enabled:
+        try:
+            data = await tmdb.upcoming_movies()
+            for m in (data if isinstance(data, list) else data.get("results", []))[:15]:
+                rd = m.get("release_date", "")
+                if rd:
+                    events.append({"title": m.get("title", ""), "date": rd, "type": "movie",
+                                   "poster_url": f"https://image.tmdb.org/t/p/w200{m['poster_path']}" if m.get("poster_path") else None,
+                                   "source": "TMDB", "has_file": False})
+        except Exception:
+            pass
+
+    # TV — TMDB airing today + this week
+    if "tv" in enabled:
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as client:
+                headers = {"Authorization": f"Bearer {tmdb.api_key}"}
+                resp = await client.get("https://api.themoviedb.org/3/tv/airing_today", params={"language": "en-US", "page": 1}, headers=headers)
+                if resp.status_code == 200:
+                    for s in resp.json().get("results", [])[:15]:
+                        fd = s.get("first_air_date", "")
+                        events.append({"title": s.get("name", ""), "date": fd, "type": "tv_episode",
+                                       "poster_url": f"https://image.tmdb.org/t/p/w200{s['poster_path']}" if s.get("poster_path") else None,
+                                       "source": "TMDB Airing Today", "has_file": False})
+        except Exception:
+            pass
+
+    # Music — MusicBrainz new releases
+    if "music" in enabled:
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get("https://musicbrainz.org/ws/2/release",
+                    params={"query": "date:[NOW TO NOW+30DAYS]", "fmt": "json", "limit": 10},
+                    headers={"User-Agent": "GrimmGear-Mediarr/1.0 (richard@grimmgear.com)"})
+                if resp.status_code == 200:
+                    for r in resp.json().get("releases", []):
+                        artist = r.get("artist-credit", [{}])[0].get("name", "") if r.get("artist-credit") else ""
+                        events.append({"title": artist + " - " + r.get("title", ""), "date": r.get("date", ""),
+                                       "type": "album", "source": "MusicBrainz", "has_file": False})
+        except Exception:
+            pass
+
+    # Books — from DB (monitored, no file)
+    if "books" in enabled:
+        result = await db.execute(select(Book).where(Book.monitored == True, Book.has_file == False))
+        for b in result.scalars().all():
+            events.append({"title": b.title, "date": str(b.year) + "-01-01" if b.year else "",
+                           "type": "book", "source": "Library", "has_file": b.has_file})
+
+    # Sort by date
+    events.sort(key=lambda x: x.get("date") or "9999")
+    return {"events": events, "modules_active": list(enabled)}
+
+
 @api_router.get("/search/indexers")
 async def search_indexers(
     q: str = Query(..., min_length=1),

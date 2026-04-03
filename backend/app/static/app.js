@@ -48,7 +48,10 @@ function navigate(page) {
 }
 
 // ── Dashboard ─────────────────────────────────────────────
+let _dashRendering = false;
 async function renderDashboard() {
+    if (_dashRendering) return;
+    _dashRendering = true;
     content.textContent = '';
 
     const [status,health,movies,series,downloads,speed,scheduler] = await Promise.all([
@@ -140,6 +143,7 @@ async function renderDashboard() {
         tvPanel.appendChild(tvBody);
         content.appendChild(tvPanel);
     }
+    _dashRendering = false;
 }
 
 // ── Media Card ────────────────────────────────────────────
@@ -160,36 +164,27 @@ async function renderMovies() {
     content.textContent = '';
     content.appendChild(el('div','page-title','Movies'));
 
-    // Search bar
-    const box = el('div','search-box');
-    const input = el('input','search-input'); input.id='movie-search'; input.placeholder='Search TMDB for movies to add...';
-    input.onkeydown = e => { if(e.key==='Enter')searchMovies(); }; box.appendChild(input);
-    const btn = el('button','btn btn-primary','Search'); btn.onclick=searchMovies; box.appendChild(btn);
-    content.appendChild(box);
-    content.appendChild(el('div','',''));
-    const resultsDiv = el('div'); resultsDiv.id='movie-results'; content.appendChild(resultsDiv);
-
-    // Library
-    const movies = await api('/movies');
-    const panel = el('div','panel');
-    const head = el('div','panel-header','My Movies'+(movies?.length?' ('+movies.length+')':''));
-    panel.appendChild(head);
-    const body = el('div','panel-body');
-    const grid = el('div','card-grid');
-    if (movies?.length > 0) {
-        movies.forEach(m => {
-            const card = mkMediaCard(m.title, m.year, m.poster_url, m.has_file);
-            card.onclick = () => showMovieDetail(m.id);
-            grid.appendChild(card);
-        });
-    } else {
-        grid.appendChild(el('div','empty','No movies yet — search above to add'));
-    }
-    body.appendChild(grid); panel.appendChild(body); content.appendChild(panel);
-
-    // Update nav count
-    updateNavCount('movies', movies?.length || 0);
+    // Tab bar: On Disk | Library | Upcoming | Popular | Search
+    const tabs = el('div','settings-tabs');
+    const tabNames = ['On Disk','Library','Upcoming','Popular','Search'];
+    const tabContent = el('div','');
+    tabNames.forEach((t,i)=>{
+        const btn = el('button','settings-tab'+(i===0?' active':''),t);
+        btn.onclick=()=>{
+            tabs.querySelectorAll('.settings-tab').forEach(b=>b.classList.remove('active'));
+            btn.classList.add('active');
+            renderMediaTab(tabContent,'movie',t);
+        };
+        tabs.appendChild(btn);
+    });
+    content.appendChild(tabs);
+    content.appendChild(tabContent);
+    renderMediaTab(tabContent,'movie','On Disk');
+    updateNavCount('movies', 0);
 }
+
+// ── TV Shows ── (reuse same pattern)
+
 
 async function searchMovies() {
     const q = document.getElementById('movie-search').value; if(!q) return;
@@ -211,28 +206,21 @@ async function searchMovies() {
 async function renderTV() {
     content.textContent='';
     content.appendChild(el('div','page-title','TV Shows'));
-
-    const box = el('div','search-box');
-    const input = el('input','search-input'); input.id='tv-search'; input.placeholder='Search TMDB for TV shows...';
-    input.onkeydown=e=>{if(e.key==='Enter')searchTV();}; box.appendChild(input);
-    const btn = el('button','btn btn-primary','Search'); btn.onclick=searchTV; box.appendChild(btn);
-    content.appendChild(box);
-    const rd = el('div'); rd.id='tv-results'; content.appendChild(rd);
-
-    const series = await api('/series');
-    const panel = el('div','panel');
-    panel.appendChild(el('div','panel-header','My Series'+(series?.length?' ('+series.length+')':'')));
-    const body = el('div','panel-body');
-    const grid = el('div','card-grid');
-    if(series?.length>0){
-        series.forEach(s=>{
-            const card = mkMediaCard(s.title,s.year,s.poster_url,false);
-            card.onclick = () => showSeriesDetail(s.id);
-            grid.appendChild(card);
-        });
-    } else { grid.appendChild(el('div','empty','No TV shows — search above')); }
-    body.appendChild(grid); panel.appendChild(body); content.appendChild(panel);
-    updateNavCount('tv', series?.length || 0);
+    const tabs = el('div','settings-tabs');
+    const tabNames = ['On Disk','Library','Upcoming','Popular','Search'];
+    const tabContent = el('div','');
+    tabNames.forEach((t,i)=>{
+        const btn = el('button','settings-tab'+(i===0?' active':''),t);
+        btn.onclick=()=>{
+            tabs.querySelectorAll('.settings-tab').forEach(b=>b.classList.remove('active'));
+            btn.classList.add('active');
+            renderMediaTab(tabContent,'tv',t);
+        };
+        tabs.appendChild(btn);
+    });
+    content.appendChild(tabs);
+    content.appendChild(tabContent);
+    renderMediaTab(tabContent,'tv','On Disk');
 }
 
 async function searchTV() {
