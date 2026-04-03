@@ -43,7 +43,10 @@ function navigate(page) {
     if (overlay) overlay.classList.remove('active');
     // Route
     const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,music:renderMusic,books:renderBooks,comics:renderComics,search:renderSearch,downloads:renderDownloads,library:renderLibrary,calendar:renderCalendar,requests:renderRequests,indexers:renderIndexers,blocklist:renderBlocklist,system:renderSystem,settings:renderSettings};
-    (routes[page]||renderDashboard)();
+    const fn = routes[page];
+    if (fn) {
+        try { fn(); } catch(e) { console.error('Page render error:', page, e); content.textContent='Error loading ' + page; }
+    } else { renderDashboard(); }
     window.location.hash = page;
 }
 

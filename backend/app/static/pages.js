@@ -181,6 +181,7 @@ async function renderCalendar() {
     content.appendChild(el('p','page-subtitle','Upcoming releases across all enabled modules'));
 
     // Use smart calendar that respects module toggles
+    const now = new Date();
     const data = await api('/calendar/smart');
     if (!data || !data.events || data.events.length === 0) {
         const empty = el('div','panel');
