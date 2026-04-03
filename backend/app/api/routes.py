@@ -1574,3 +1574,111 @@ async def run_cleanup(req: CleanupRunRequest):
 
     total_freed = sum(d["size"] for d in deleted)
     return {"deleted": len(deleted), "errors": len(errors), "freed": total_freed}
+
+
+# ============================================================
+# MUSIC — MusicBrainz metadata + search (replaces Lidarr)
+# ============================================================
+
+from app.services.metadata.musicbrainz import musicbrainz
+
+
+@api_router.get("/music/search/artists")
+async def search_music_artists(q: str = Query(..., min_length=1)):
+    """Search MusicBrainz for artists."""
+    return await musicbrainz.search_artists(q)
+
+
+@api_router.get("/music/search/albums")
+async def search_music_albums(q: str = Query(..., min_length=1), artist: str = ""):
+    """Search MusicBrainz for albums/releases."""
+    return await musicbrainz.search_albums(q, artist)
+
+
+@api_router.get("/music/artist/{mbid}")
+async def get_music_artist(mbid: str):
+    """Get artist details + discography from MusicBrainz."""
+    data = await musicbrainz.get_artist(mbid)
+    if not data:
+        raise HTTPException(404, "Artist not found")
+    # Try to get cover art for first album
+    if data.get("albums"):
+        art = await musicbrainz.get_album_art(data["albums"][0]["mbid"])
+        if art:
+            data["image_url"] = art
+    return data
+
+
+@api_router.get("/music/library")
+async def music_library():
+    """List all music in the library (filesystem scan)."""
+    music_dir = settings.paths.music_dir
+    if not music_dir.exists():
+        return {"artists": [], "total": 0}
+
+    artists = {}
+    for item in sorted(music_dir.iterdir()):
+        if item.is_dir():
+            # Count tracks
+            tracks = sum(1 for f in item.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXT)
+            size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file() and f.suffix.lower() in AUDIO_EXT)
+            artists[item.name] = {"name": item.name, "tracks": tracks, "size": size, "path": str(item)}
+        elif item.is_file() and item.suffix.lower() in AUDIO_EXT:
+            name = item.stem
+            artists[name] = {"name": name, "tracks": 1, "size": item.stat().st_size, "path": str(item)}
+
+    return {"artists": list(artists.values()), "total": len(artists)}
+
+
+# ============================================================
+# BOOKS — OpenLibrary metadata (replaces Readarr)
+# ============================================================
+
+@api_router.get("/books/search")
+async def search_books(q: str = Query(..., min_length=1)):
+    """Search OpenLibrary for books."""
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://openlibrary.org/search.json",
+                params={"q": q, "limit": 20},
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            return [
+                {
+                    "title": doc.get("title", ""),
+                    "author": doc.get("author_name", [""])[0] if doc.get("author_name") else "",
+                    "year": doc.get("first_publish_year"),
+                    "isbn": doc.get("isbn", [""])[0] if doc.get("isbn") else "",
+                    "cover_url": f"https://covers.openlibrary.org/b/id/{doc['cover_i']}-M.jpg" if doc.get("cover_i") else None,
+                    "subjects": doc.get("subject", [])[:5],
+                    "edition_count": doc.get("edition_count", 0),
+                    "olid": doc.get("key", ""),
+                }
+                for doc in data.get("docs", [])
+            ]
+    except Exception as e:
+        logger.error(f"OpenLibrary search error: {e}")
+        return []
+
+
+@api_router.get("/books/library")
+async def books_library():
+    """List all books in the library (filesystem scan)."""
+    books_dir = settings.paths.books_dir
+    if not books_dir.exists():
+        return {"books": [], "total": 0}
+
+    books = []
+    for item in sorted(books_dir.rglob("*")):
+        if item.is_file() and item.suffix.lower() in BOOK_EXT:
+            books.append({
+                "name": item.name,
+                "format": item.suffix.lower().lstrip("."),
+                "size": item.stat().st_size,
+                "path": str(item),
+            })
+    return {"books": books, "total": len(books)}
