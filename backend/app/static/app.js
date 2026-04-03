@@ -268,8 +268,9 @@ async function renderSearch() {
 async function searchIndexers() {
     const q=document.getElementById('idx-search').value; if(!q) return;
     const rd=document.getElementById('idx-results'); rd.textContent='Searching indexers...';
-    const data=await api('/search/indexers?q='+encodeURIComponent(q));
+    const data=await (async()=>{try{const r=await fetch(API+'/search/indexers?q='+encodeURIComponent(q),{signal:AbortSignal.timeout(60000)});return r.ok?await r.json():null;}catch{return null;}})();
     rd.textContent='';
+    if(!data){ rd.textContent='Search timed out or failed. Try again.'; return; }
     if(!data?.results?.length){ rd.textContent='No results from '+(data?.indexers_searched||0)+' indexers.'; return; }
     const panel = el('div','panel');
     panel.appendChild(el('div','panel-header',data.total+' results from '+data.indexers_searched+' indexers'));
