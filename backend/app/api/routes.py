@@ -17,7 +17,7 @@ from app.core.download.qbit_client import qbit
 from app.core.search.indexer_search import indexer_engine
 from app.db.models import (
     Movie, Series, Season, Episode, Artist, Album, Track,
-    Author, Book, QualityProfile, Indexer, DownloadQueueItem, User,
+    Author, Book, QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
 )
 from app.db.session import get_db
 from app.modules.registry import registry
@@ -1193,3 +1193,213 @@ async def transcode_add(req: TranscodeRequest):
 async def transcode_cancel(job_id: int):
     """Cancel a queued transcode job."""
     return {"cancelled": transcoder.cancel_job(job_id)}
+
+
+# ============================================================
+# NOTIFICATIONS — Discord, Telegram, Webhook
+# ============================================================
+
+from app.core.notifications import notifier
+from app.core.notifications.notifier import NotificationChannel
+
+
+class AddNotificationChannelRequest(BaseModel):
+    name: str
+    type: str  # discord, telegram, webhook
+    discord_webhook_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    webhook_url: str = ""
+
+
+@api_router.get("/notifications/channels")
+async def list_notification_channels():
+    return {"channels": notifier.get_channels()}
+
+
+@api_router.post("/notifications/channels")
+async def add_notification_channel(req: AddNotificationChannelRequest):
+    ch = NotificationChannel(
+        name=req.name,
+        type=req.type,
+        discord_webhook_url=req.discord_webhook_url,
+        telegram_bot_token=req.telegram_bot_token,
+        telegram_chat_id=req.telegram_chat_id,
+        webhook_url=req.webhook_url,
+    )
+    notifier.add_channel(ch)
+    return {"added": True, "name": ch.name}
+
+
+@api_router.delete("/notifications/channels/{name}")
+async def remove_notification_channel(name: str):
+    return {"removed": notifier.remove_channel(name)}
+
+
+@api_router.post("/notifications/channels/{name}/test")
+async def test_notification_channel(name: str):
+    return await notifier.test_channel(name)
+
+
+@api_router.get("/notifications/history")
+async def notification_history():
+    return {"history": notifier.history}
+
+
+# ============================================================
+# REQUESTS — user media requests with approval workflow
+# ============================================================
+
+class CreateRequestModel(BaseModel):
+    title: str
+    media_type: str = "movie"
+    tmdb_id: int = 0
+    year: int = 0
+    poster_url: str = ""
+    overview: str = ""
+    requester: str = "anonymous"
+    note: str = ""
+
+
+@api_router.get("/requests")
+async def list_requests(status: str = "", db: AsyncSession = Depends(get_db)):
+    """List all media requests, optionally filtered by status."""
+    q = select(MediaRequest).order_by(MediaRequest.id.desc())
+    if status:
+        q = q.where(MediaRequest.status == status)
+    result = await db.execute(q)
+    return [
+        {
+            "id": r.id, "title": r.title, "media_type": r.media_type,
+            "tmdb_id": r.tmdb_id, "year": r.year, "poster_url": r.poster_url,
+            "overview": r.overview, "status": r.status, "requester": r.requester,
+            "votes": r.votes, "note": r.note,
+        }
+        for r in result.scalars().all()
+    ]
+
+
+@api_router.post("/requests")
+async def create_request(req: CreateRequestModel, db: AsyncSession = Depends(get_db)):
+    """Submit a new media request."""
+    # Check for duplicate
+    existing = await db.execute(
+        select(MediaRequest).where(
+            MediaRequest.title == req.title,
+            MediaRequest.media_type == req.media_type,
+            MediaRequest.status.in_(["pending", "approved"]),
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(409, "Request already exists")
+
+    media_req = MediaRequest(
+        title=req.title,
+        media_type=req.media_type,
+        tmdb_id=req.tmdb_id if req.tmdb_id else None,
+        year=req.year if req.year else None,
+        poster_url=req.poster_url or None,
+        overview=req.overview or None,
+        requester=req.requester,
+        note=req.note or None,
+    )
+    db.add(media_req)
+    await db.flush()
+
+    # Notify
+    await notifier.notify(
+        "request.new",
+        f"New Request: {req.title}",
+        f"{req.requester} requested {req.media_type}: {req.title}",
+        poster_url=req.poster_url,
+    )
+
+    return {"id": media_req.id, "title": media_req.title, "created": True}
+
+
+@api_router.post("/requests/{request_id}/approve")
+async def approve_request(request_id: int, db: AsyncSession = Depends(get_db)):
+    """Approve a request and optionally auto-add to library."""
+    media_req = await db.get(MediaRequest, request_id)
+    if not media_req:
+        raise HTTPException(404, "Request not found")
+    media_req.status = "approved"
+
+    # Auto-add to library if TMDB ID is available
+    added = False
+    if media_req.tmdb_id:
+        if media_req.media_type == "movie":
+            existing = await db.execute(select(Movie).where(Movie.tmdb_id == media_req.tmdb_id))
+            if not existing.scalar_one_or_none():
+                meta = await tmdb.get_movie(media_req.tmdb_id)
+                if meta:
+                    movie = Movie(
+                        title=meta["title"], year=meta.get("year"), tmdb_id=meta["tmdb_id"],
+                        imdb_id=meta.get("imdb_id"), overview=meta.get("overview", ""),
+                        poster_url=meta.get("poster_url"), fanart_url=meta.get("fanart_url"),
+                        original_language=meta.get("original_language", "en"),
+                        runtime=meta.get("runtime"), genres=meta.get("genres"),
+                        quality_profile_id=1, root_folder=str(settings.paths.movies_dir),
+                        monitored=True,
+                    )
+                    db.add(movie)
+                    added = True
+        elif media_req.media_type == "tv":
+            meta = await tmdb.get_tv(media_req.tmdb_id)
+            if meta:
+                tvdb_id = meta.get("tvdb_id") or media_req.tmdb_id
+                existing = await db.execute(select(Series).where(Series.tvdb_id == tvdb_id))
+                if not existing.scalar_one_or_none():
+                    series = Series(
+                        title=meta["title"], year=meta.get("year"), tvdb_id=tvdb_id,
+                        tmdb_id=meta["tmdb_id"], overview=meta.get("overview", ""),
+                        poster_url=meta.get("poster_url"), fanart_url=meta.get("fanart_url"),
+                        original_language=meta.get("original_language", "en"),
+                        genres=meta.get("genres"), quality_profile_id=1,
+                        root_folder=str(settings.paths.tv_dir), monitored=True,
+                    )
+                    db.add(series)
+                    added = True
+
+    await notifier.notify(
+        "request.approved",
+        f"Approved: {media_req.title}",
+        f"Request approved" + (" and added to library" if added else ""),
+        poster_url=media_req.poster_url,
+    )
+
+    return {"approved": True, "added_to_library": added, "title": media_req.title}
+
+
+@api_router.post("/requests/{request_id}/deny")
+async def deny_request(request_id: int, db: AsyncSession = Depends(get_db)):
+    media_req = await db.get(MediaRequest, request_id)
+    if not media_req:
+        raise HTTPException(404, "Request not found")
+    media_req.status = "denied"
+
+    await notifier.notify(
+        "request.denied",
+        f"Denied: {media_req.title}",
+        f"Request denied",
+    )
+
+    return {"denied": True, "title": media_req.title}
+
+
+@api_router.post("/requests/{request_id}/vote")
+async def vote_request(request_id: int, db: AsyncSession = Depends(get_db)):
+    media_req = await db.get(MediaRequest, request_id)
+    if not media_req:
+        raise HTTPException(404, "Request not found")
+    media_req.votes += 1
+    return {"votes": media_req.votes, "title": media_req.title}
+
+
+@api_router.delete("/requests/{request_id}")
+async def delete_request(request_id: int, db: AsyncSession = Depends(get_db)):
+    media_req = await db.get(MediaRequest, request_id)
+    if not media_req:
+        raise HTTPException(404, "Request not found")
+    await db.delete(media_req)
+    return {"deleted": True, "title": media_req.title}

@@ -39,7 +39,7 @@ function navigate(page) {
     const overlay = document.querySelector('.mobile-overlay');
     if (overlay) overlay.classList.remove('active');
     // Route
-    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,library:renderLibrary,indexers:renderIndexers,settings:renderSettings};
+    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,library:renderLibrary,requests:renderRequests,indexers:renderIndexers,settings:renderSettings};
     (routes[page]||renderDashboard)();
     window.location.hash = page;
 }
@@ -537,7 +537,97 @@ async function showLibrarySection(type) {
     sectionDiv.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-// ���─ Indexers ─���────────────────────────────────────────────
+// ── Requests ──────────────────────────────────────────────
+async function renderRequests() {
+    content.textContent='';
+    content.appendChild(el('div','page-title','Requests'));
+    content.appendChild(el('div','page-subtitle','Request movies and TV shows. Search TMDB, submit, and admins approve.'));
+
+    // Search bar
+    const box = el('div','search-box');
+    const input = el('input','search-input'); input.id='req-search'; input.placeholder='Search TMDB for a movie or show to request...';
+    input.onkeydown=e=>{if(e.key==='Enter')searchForRequest();}; box.appendChild(input);
+    const btn = el('button','btn btn-primary','Search'); btn.onclick=searchForRequest; box.appendChild(btn);
+    content.appendChild(box);
+    const rd = el('div'); rd.id='req-search-results'; content.appendChild(rd);
+
+    // Existing requests
+    const requests = await api('/requests');
+    const pending = requests?.filter(r=>r.status==='pending')||[];
+    const approved = requests?.filter(r=>r.status==='approved')||[];
+    const denied = requests?.filter(r=>r.status==='denied')||[];
+
+    if(pending.length > 0){
+        const panel = el('div','panel');
+        panel.appendChild(el('div','panel-header','Pending Requests ('+pending.length+')'));
+        const body = el('div','panel-body');
+        pending.forEach(r => body.appendChild(mkRequestRow(r, true)));
+        panel.appendChild(body); content.appendChild(panel);
+    }
+    if(approved.length > 0){
+        const panel = el('div','panel');
+        panel.appendChild(el('div','panel-header','Approved ('+approved.length+')'));
+        const body = el('div','panel-body');
+        approved.forEach(r => body.appendChild(mkRequestRow(r, false)));
+        panel.appendChild(body); content.appendChild(panel);
+    }
+    if(!requests?.length){
+        content.appendChild(el('div','empty','No requests yet. Search above to request something.'));
+    }
+}
+
+function mkRequestRow(r, showActions) {
+    const row = el('div','table-row');
+    const statusColors = {pending:'tag-yellow',approved:'tag-green',denied:'tag-red',available:'tag-cyan'};
+    row.appendChild(el('span','tag '+(statusColors[r.status]||'tag-blue'),r.status));
+    row.appendChild(el('span','tag tag-blue',r.media_type));
+    if(r.poster_url){
+        const img = document.createElement('img');
+        img.src=r.poster_url; img.style.cssText='width:30px;height:45px;object-fit:cover;border-radius:3px;flex-shrink:0';
+        row.appendChild(img);
+    }
+    const title = el('span','dl-name',r.title+(r.year?' ('+r.year+')':'')); row.appendChild(title);
+    const voteBtn = el('button','btn btn-ghost btn-xs','\u2B06 '+r.votes);
+    voteBtn.onclick=async(e)=>{e.stopPropagation();const res=await apiPost('/requests/'+r.id+'/vote');if(res)voteBtn.textContent='\u2B06 '+res.votes;};
+    row.appendChild(voteBtn);
+    row.appendChild(el('span','file-meta',r.requester));
+    if(showActions){
+        const approveBtn = el('button','btn btn-success btn-xs','Approve');
+        approveBtn.onclick=async(e)=>{e.stopPropagation();const res=await apiPost('/requests/'+r.id+'/approve');if(res?.approved){toast('Approved: '+r.title+(res.added_to_library?' (added to library)':''),'success');renderRequests();}};
+        row.appendChild(approveBtn);
+        const denyBtn = el('button','btn btn-danger btn-xs','Deny');
+        denyBtn.onclick=async(e)=>{e.stopPropagation();const res=await apiPost('/requests/'+r.id+'/deny');if(res?.denied){toast('Denied','');renderRequests();}};
+        row.appendChild(denyBtn);
+    }
+    return row;
+}
+
+async function searchForRequest() {
+    const q=document.getElementById('req-search').value; if(!q) return;
+    const rd=document.getElementById('req-search-results'); rd.textContent='Searching...';
+    const data = await api('/search?q='+encodeURIComponent(q));
+    rd.textContent='';
+    if(!data?.length){rd.textContent='No results.'; return;}
+    const grid = el('div','card-grid');
+    data.slice(0,12).forEach(item => {
+        const card = mkMediaCard(item.title,(item.year||'')+(item.rating?' \u2014 \u2605'+item.rating.toFixed(1):''),item.poster_url,false);
+        card.onclick = async () => {
+            const r = await apiPost('/requests',{
+                title:item.title, media_type:item.media_type||'movie',
+                tmdb_id:item.tmdb_id, year:item.year||0,
+                poster_url:item.poster_url||'', overview:item.overview||'',
+                requester:'admin',
+            });
+            if(r?.created){ toast('Requested: '+item.title,'success'); renderRequests(); }
+            else toast('Already requested or failed','error');
+        };
+        grid.appendChild(card);
+    });
+    rd.appendChild(grid);
+    rd.appendChild(el('div','page-subtitle','Click to submit a request'));
+}
+
+// ── Indexers ──────────────────────────────────────────────
 async function renderIndexers() {
     content.textContent='';
     content.appendChild(el('div','page-title','Indexers'));
@@ -1190,7 +1280,7 @@ setInterval(async()=>{
 // ── Hash-based routing ────────────────────────────────────
 function initFromHash() {
     const hash = window.location.hash.replace('#','');
-    if(hash && ['dashboard','movies','tv','search','downloads','library','indexers','settings'].includes(hash)){
+    if(hash && ['dashboard','movies','tv','search','downloads','library','requests','indexers','settings'].includes(hash)){
         navigate(hash);
     } else {
         navigate('dashboard');

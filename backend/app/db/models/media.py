@@ -216,3 +216,19 @@ class User(Base):
     streaming_services: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)
     quota_movies: Mapped[int] = mapped_column(Integer, default=0)  # 0 = unlimited
     quota_tv: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class MediaRequest(Base):
+    __tablename__ = "media_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(500))
+    media_type: Mapped[str] = mapped_column(String(20))  # movie, tv
+    tmdb_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    year: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    poster_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    overview: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, approved, denied, available
+    requester: Mapped[str] = mapped_column(String(100), default="anonymous")
+    votes: Mapped[int] = mapped_column(Integer, default=1)
+    note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
