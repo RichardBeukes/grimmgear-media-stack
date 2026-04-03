@@ -757,6 +757,37 @@ async function renderSettings() {
     }
     schedPanel.appendChild(schedBody); content.appendChild(schedPanel);
 
+    // Transcode section
+    const tcPanel = el('div','panel');
+    const tcHead = el('div','panel-header');
+    tcHead.appendChild(el('span','','Transcode (FFmpeg)'));
+    tcPanel.appendChild(tcHead);
+    const tcBody = el('div','panel-body');
+    const tcStatus = await api('/transcode/status');
+    if(tcStatus){
+        [['FFmpeg',tcStatus.ffmpeg||'not found'],['Running',tcStatus.running?'Yes':'No'],['Queue',String(tcStatus.queue_length)],
+         ['Completed',String(tcStatus.stats?.completed||0)],['Failed',String(tcStatus.stats?.failed||0)],
+         ['Space Saved',fmtBytes(tcStatus.stats?.bytes_saved||0)]
+        ].forEach(([k,v])=>{
+            const row = el('div','table-row');
+            row.appendChild(el('span','',k)); const spacer=el('span',''); spacer.style.flex='1'; row.appendChild(spacer);
+            const val=el('span','',v); val.style.color='var(--text-bright)'; row.appendChild(val);
+            tcBody.appendChild(row);
+        });
+        if(tcStatus.current){
+            const cur = el('div','table-row');
+            cur.appendChild(el('span','tag tag-blue','Transcoding'));
+            cur.appendChild(el('span','dl-name',tcStatus.current.source));
+            const prog = el('div','progress'); prog.style.maxWidth='100px';
+            const fill = el('div','progress-fill downloading'); fill.style.width=(tcStatus.current.progress*100)+'%'; prog.appendChild(fill);
+            cur.appendChild(prog);
+            cur.appendChild(el('span','dl-stat',(tcStatus.current.progress*100).toFixed(0)+'%'));
+            cur.appendChild(el('span','dl-stat',tcStatus.current.speed||''));
+            tcBody.appendChild(cur);
+        }
+    } else { tcBody.appendChild(el('div','','Transcode service not available')); }
+    tcPanel.appendChild(tcBody); content.appendChild(tcPanel);
+
     // Plex section
     const plexPanel = el('div','panel');
     const plexHead = el('div','panel-header');
@@ -1119,8 +1150,13 @@ async function browseFolder(path) {
                 row.appendChild(el('span','file-meta',fmtBytes(item.size||0)));
 
                 if(item.stream_url && (item.type==='video' || item.type==='audio')) {
+                    // Show codec badge for video files
+                    const ext = item.name.split('.').pop().toLowerCase();
+                    if(['mkv','avi','wmv','flv','ts','m2ts'].includes(ext)){
+                        row.appendChild(el('span','tag tag-orange','Transcode'));
+                    }
                     const playBtn = el('button','play-btn','\u25B6');
-                    playBtn.title = 'Play';
+                    playBtn.title = 'Play'+(ext==='mkv'?' (auto-transcode)':'');
                     playBtn.onclick = (e) => { e.stopPropagation(); playMedia(item.stream_url, item.name, item.type); };
                     row.appendChild(playBtn);
                 }

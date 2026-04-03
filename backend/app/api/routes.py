@@ -1054,6 +1054,7 @@ async def library_browse(path: str = ""):
 
 import base64 as _b64
 import mimetypes
+from app.core.transcode import transcoder
 
 MIME_MAP = {
     ".mp4": "video/mp4", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
@@ -1064,34 +1065,47 @@ MIME_MAP = {
     ".wma": "audio/x-ms-wma", ".aac": "audio/aac",
 }
 
+# Extensions that need transcoding for browser playback
+TRANSCODE_EXT = {".mkv", ".avi", ".wmv", ".flv", ".ts", ".m2ts"}
 
-@api_router.get("/stream/{file_token}")
-async def stream_media(file_token: str, request: Request):
-    """Stream a media file. Supports HTTP range requests for seeking."""
+
+def _resolve_token(file_token: str) -> _Path:
+    """Decode a stream token and validate the path."""
     try:
         rel_path = _b64.urlsafe_b64decode(file_token).decode()
     except Exception:
         raise HTTPException(400, "Invalid file token")
-
     file_path = settings.paths.media_root / rel_path
-
-    # Security check
     try:
         file_path.resolve().relative_to(settings.paths.media_root.resolve())
     except ValueError:
         raise HTTPException(403, "Path traversal blocked")
-
     if not file_path.is_file():
         raise HTTPException(404, "File not found")
+    return file_path
+
+
+@api_router.get("/stream/{file_token}")
+async def stream_media(file_token: str, request: Request):
+    """Stream a media file. Supports HTTP range requests for seeking.
+    For MKV/AVI/etc, auto-redirects to transcode endpoint."""
+    file_path = _resolve_token(file_token)
+    ext = file_path.suffix.lower()
+
+    # Auto-transcode non-browser formats
+    if ext in TRANSCODE_EXT:
+        return StreamingResponse(
+            transcoder.stream_transcode(str(file_path)),
+            media_type="video/mp4",
+            headers={"Content-Disposition": f'inline; filename="{file_path.stem}.mp4"'},
+        )
 
     file_size = file_path.stat().st_size
-    ext = file_path.suffix.lower()
     content_type = MIME_MAP.get(ext, mimetypes.guess_type(str(file_path))[0] or "application/octet-stream")
 
     # Parse range header
     range_header = request.headers.get("range")
     if range_header:
-        # Parse "bytes=start-end"
         range_spec = range_header.replace("bytes=", "")
         parts = range_spec.split("-")
         start = int(parts[0]) if parts[0] else 0
@@ -1122,7 +1136,6 @@ async def stream_media(file_token: str, request: Request):
             },
         )
     else:
-        # Full file
         async def full_file():
             with open(file_path, "rb") as f:
                 while chunk := f.read(65536):
@@ -1137,3 +1150,46 @@ async def stream_media(file_token: str, request: Request):
                 "Content-Disposition": f'inline; filename="{file_path.name}"',
             },
         )
+
+
+# ============================================================
+# TRANSCODE — FFmpeg batch queue + probe
+# ============================================================
+
+@api_router.get("/transcode/status")
+async def transcode_status():
+    """Get transcoder status and stats."""
+    return transcoder.status
+
+
+@api_router.get("/transcode/queue")
+async def transcode_queue():
+    """Get the transcode queue."""
+    return {"queue": transcoder.queue}
+
+
+@api_router.get("/transcode/probe/{file_token}")
+async def transcode_probe(file_token: str):
+    """Probe a media file for codec info and transcode needs."""
+    file_path = _resolve_token(file_token)
+    return transcoder.probe(str(file_path))
+
+
+class TranscodeRequest(BaseModel):
+    file_token: str
+
+
+@api_router.post("/transcode/add")
+async def transcode_add(req: TranscodeRequest):
+    """Add a file to the batch transcode queue (MKV to MP4)."""
+    file_path = _resolve_token(req.file_token)
+    job = transcoder.add_to_queue(str(file_path))
+    # Start processing in background
+    asyncio.create_task(transcoder.process_queue())
+    return {"queued": True, "job_id": job.id, "source": file_path.name}
+
+
+@api_router.delete("/transcode/{job_id}")
+async def transcode_cancel(job_id: int):
+    """Cancel a queued transcode job."""
+    return {"cancelled": transcoder.cancel_job(job_id)}
