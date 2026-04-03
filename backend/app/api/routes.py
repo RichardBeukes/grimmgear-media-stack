@@ -460,6 +460,18 @@ async def delete_download(hash: str, delete_files: bool = False):
     return {"deleted": success}
 
 
+@api_router.post("/downloads/{hash}/pause")
+async def pause_download(hash: str):
+    success = await qbit.pause_torrent(hash)
+    return {"paused": success}
+
+
+@api_router.post("/downloads/{hash}/resume")
+async def resume_download(hash: str):
+    success = await qbit.resume_torrent(hash)
+    return {"resumed": success}
+
+
 # ============================================================
 # QUEUE — internal download tracking
 # ============================================================
@@ -492,6 +504,28 @@ class AddIndexerRequest(BaseModel):
     use_flaresolverr: bool = False
 
 
+# ── Seed default quality profiles on first call ─────────
+_profiles_seeded = False
+
+async def seed_quality_profiles(db: AsyncSession):
+    global _profiles_seeded
+    if _profiles_seeded:
+        return
+    existing = await db.execute(select(QualityProfile))
+    if existing.scalars().first():
+        _profiles_seeded = True
+        return
+    defaults = [
+        QualityProfile(name="Any", language="English", min_quality="SDTV", cutoff="Bluray-1080p", upgrade_allowed=True),
+        QualityProfile(name="HD-1080p", language="English", min_quality="HDTV-720p", cutoff="Bluray-1080p", upgrade_allowed=True),
+        QualityProfile(name="Ultra-HD", language="English", min_quality="HDTV-1080p", cutoff="Remux-2160p", upgrade_allowed=True),
+        QualityProfile(name="SD", language="English", min_quality="SDTV", cutoff="DVD", upgrade_allowed=False),
+    ]
+    for p in defaults:
+        db.add(p)
+    _profiles_seeded = True
+
+
 @api_router.get("/indexers")
 async def list_indexers(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Indexer))
@@ -507,8 +541,12 @@ async def list_indexers(db: AsyncSession = Depends(get_db)):
 
 @api_router.post("/indexers")
 async def add_indexer(req: AddIndexerRequest, db: AsyncSession = Depends(get_db)):
+    if not req.name or not req.name.strip():
+        raise HTTPException(400, "Indexer name is required")
+    if not req.url or not req.url.strip():
+        raise HTTPException(400, "Indexer URL is required")
     indexer = Indexer(
-        name=req.name,
+        name=req.name.strip(),
         url=req.url,
         api_key=req.api_key,
         indexer_type=req.indexer_type,
@@ -535,6 +573,7 @@ async def delete_indexer(indexer_id: int, db: AsyncSession = Depends(get_db)):
 
 @api_router.get("/qualityprofiles")
 async def list_quality_profiles(db: AsyncSession = Depends(get_db)):
+    await seed_quality_profiles(db)
     result = await db.execute(select(QualityProfile))
     return [
         {

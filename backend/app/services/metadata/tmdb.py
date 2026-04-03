@@ -14,9 +14,12 @@ logger = logging.getLogger("grimmgear.tmdb")
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMG = "https://image.tmdb.org/t/p"
 # Free read-only API key (TMDB v3 — public, rate-limited)
-TMDB_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIxYjYwNzY2ZGQ0MTdkMzRlODZlOTc3MTg1OGUzYTkyMyIsIm5iZiI6MTcxMjAwMDAwMCwic3ViIjoiNjYwMDAwMDAwMDAwMDAwMDAwIiwic2NvcGVzIjpbImFwaV9yZWFkIl0sInZlcnNpb24iOjF9.placeholder"
-# Users should set their own key via GG_TMDB_API_KEY env var
-TMDB_API_KEY = ""
+import os
+# TMDB API key — set via GG_TMDB_API_KEY env var or uses default
+TMDB_API_KEY = os.environ.get(
+    "GG_TMDB_API_KEY",
+    "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJiMzFjMWM0MzE4NGM1ZmUyMzk1YjEyMDg3MDY5YWY5ZCIsIm5iZiI6MTUzODk1ODA4Mi4zMiwic3ViIjoiNWJiYWEzMDIwZTBhMjYzNGVmMDM3ZGRiIiwic2NvcGVzIjpbImFwaV9yZWFkIl0sInZlcnNpb24iOjF9.QsgHMgH8Jscu4dG8r0A3Of2s5JSVL7EtZaCGIjKr_kc"
+)
 
 
 class TMDBService:

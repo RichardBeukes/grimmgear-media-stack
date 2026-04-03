@@ -12,7 +12,7 @@ GrimmGear Systems — Richard Beukes
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -173,6 +173,15 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def root():
+        return FileResponse(os.path.join(static_dir, "index.html"))
+
+    # SPA catch-all — any non-API, non-static path serves index.html
+    # This fixes 404 on page refresh for /movies, /settings, /downloads etc.
+    @app.get("/{path:path}")
+    async def spa_catchall(path: str):
+        # Don't catch API or static routes
+        if path.startswith("api/") or path.startswith("static/"):
+            raise HTTPException(404)
         return FileResponse(os.path.join(static_dir, "index.html"))
 
     # Keep the old landing page at /about for reference

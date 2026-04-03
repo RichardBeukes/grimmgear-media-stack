@@ -9,23 +9,23 @@
 <body>
 <div id="app">
     <nav id="sidebar">
-        <div class="brand"><div class="brand-icon">G</div><span>Mediarr</span></div>
+        <div class="brand" onclick="navigate('dashboard')" style="cursor:pointer">
+            <div class="brand-icon">G</div><span>Mediarr</span>
+        </div>
         <div class="nav-links">
-            <a class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">Dashboard</a>
-            <a class="nav-link" data-page="movies" onclick="navigate('movies')">Movies</a>
-            <a class="nav-link" data-page="tv" onclick="navigate('tv')">TV Shows</a>
-            <a class="nav-link" data-page="search" onclick="navigate('search')">Search</a>
-            <a class="nav-link" data-page="downloads" onclick="navigate('downloads')">Downloads</a>
-            <a class="nav-link" data-page="indexers" onclick="navigate('indexers')">Indexers</a>
-            <a class="nav-link" data-page="settings" onclick="navigate('settings')">Settings</a>
+            <a class="nav-link active" data-page="dashboard" href="#dashboard" onclick="navigate('dashboard')">Dashboard</a>
+            <a class="nav-link" data-page="movies" href="#movies" onclick="navigate('movies')">Movies</a>
+            <a class="nav-link" data-page="tv" href="#tv" onclick="navigate('tv')">TV Shows</a>
+            <a class="nav-link" data-page="search" href="#search" onclick="navigate('search')">Search</a>
+            <a class="nav-link" data-page="downloads" href="#downloads" onclick="navigate('downloads')">Downloads</a>
+            <a class="nav-link" data-page="indexers" href="#indexers" onclick="navigate('indexers')">Indexers</a>
+            <a class="nav-link" data-page="settings" href="#settings" onclick="navigate('settings')">Settings</a>
         </div>
         <div class="nav-footer">
             <div id="dl-speed-mini">0 MB/s</div>
         </div>
     </nav>
-    <main id="content">
-        <!-- Pages rendered by JS -->
-    </main>
+    <main id="content"></main>
 </div>
 <script src="/static/app.js"></script>
 </body>
