@@ -46,7 +46,7 @@ function navigate(page) {
     const fnName = pageMap[page];
     const fn = fnName ? window[fnName] : null;
     if (fn && typeof fn === 'function') {
-        try { fn(); } catch(e) { console.error('Page error:', page, e); content.textContent='Error: ' + page + ' - ' + e.message; }
+        Promise.resolve().then(function(){ return fn(); }).catch(function(e){ console.error('Page error:', page, e); content.textContent='Error loading ' + page + ': ' + e.message; });
     } else { console.warn('Page function not found:', page, fnName); renderDashboard(); }
     window.location.hash = page;
 }
@@ -1730,7 +1730,8 @@ setInterval(async()=>{
 // ── Hash-based routing ────────────────────────────────────
 function initFromHash() {
     const hash = window.location.hash.replace('#','');
-    if(hash && ['dashboard','movies','tv','search','downloads','library','requests','indexers','settings'].includes(hash)){
+    const validPages = ['dashboard','movies','tv','music','books','comics','search','downloads','library','calendar','requests','indexers','blocklist','system','settings'];
+    if(hash && validPages.includes(hash)){
         navigate(hash);
     } else {
         navigate('dashboard');
