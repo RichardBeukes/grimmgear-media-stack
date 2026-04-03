@@ -7,10 +7,12 @@ This is the bridge between "downloaded" and "in your library."
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +34,20 @@ CATEGORY_FOLDERS = {
     "lidarr": "Music",
     "readarr": "Books",
 }
+
+# Find FFprobe — check common locations
+import glob
+_ffprobe_candidates = [
+    "ffprobe",  # system PATH
+    *glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\*FFmpeg*\*\bin\ffprobe.exe")),
+    r"C:\Tools\ffmpeg\bin\ffprobe.exe",
+    r"C:\ffmpeg\bin\ffprobe.exe",
+]
+FFPROBE_PATH = "ffprobe"
+for candidate in _ffprobe_candidates:
+    if os.path.isfile(candidate):
+        FFPROBE_PATH = candidate
+        break
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".webm"}
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".wma", ".aac"}
@@ -115,6 +131,13 @@ class ImportPipeline:
         if not media_files:
             return {"imported": False, "title": name, "reason": "No media files found in download"}
 
+        # Verify main video file with FFprobe before importing
+        if category in ("grimmgear-movies", "radarr", "grimmgear-tv", "tv-sonarr"):
+            main_file = media_files[0]  # Largest file
+            verify = self._verify_video(main_file)
+            if not verify["ok"]:
+                return {"imported": False, "title": name, "reason": verify["reason"]}
+
         results = []
         for src_file in media_files:
             # Parse title and build target path
@@ -178,6 +201,70 @@ class ImportPipeline:
         # Sort by size descending (main file first)
         files.sort(key=lambda f: f.stat().st_size, reverse=True)
         return files
+
+    def _verify_video(self, file_path: Path) -> dict:
+        """Verify video file using FFprobe. Rejects fakes, samples, corrupt files."""
+        try:
+            result = subprocess.run(
+                [FFPROBE_PATH, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", str(file_path)],
+                capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace"
+            )
+            if result.returncode != 0:
+                return {"ok": False, "reason": f"FFprobe failed on {file_path.name}"}
+
+            data = json.loads(result.stdout)
+            fmt = data.get("format", {})
+            streams = data.get("streams", [])
+
+            # Duration check — reject anything under 5 minutes for movies, 1 min for TV
+            duration = float(fmt.get("duration", 0))
+            if duration < 60:
+                return {"ok": False, "reason": f"Duration {duration:.0f}s — too short, likely fake/sample"}
+            if duration < 300:
+                # Under 5 minutes — suspicious for movies but OK for shorts
+                logger.warning(f"Short duration ({duration:.0f}s) for {file_path.name}")
+
+            # Resolution check — find video stream
+            video_streams = [s for s in streams if s.get("codec_type") == "video"]
+            if not video_streams:
+                return {"ok": False, "reason": "No video stream found"}
+
+            width = int(video_streams[0].get("width", 0))
+            height = int(video_streams[0].get("height", 0))
+
+            # Reject SD garbage claiming to be HD (ETRG pattern)
+            if width < 640 and height < 480:
+                return {"ok": False, "reason": f"Resolution {width}x{height} — too low, likely fake"}
+
+            # Check title claims vs reality
+            fname_lower = file_path.name.lower()
+            if ("2160p" in fname_lower or "4k" in fname_lower) and width < 3640:
+                return {"ok": False, "reason": f"Claims 4K but actual {width}x{height} — upscale fake"}
+            if "1080p" in fname_lower and width < 1824:
+                return {"ok": False, "reason": f"Claims 1080p but actual {width}x{height} — upscale fake"}
+
+            # Audio check
+            audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+            if not audio_streams:
+                return {"ok": False, "reason": "No audio stream found"}
+
+            # Size sanity — a 2-hour movie at 1080p should be at least 500MB
+            file_size = file_path.stat().st_size
+            if duration > 3600 and file_size < 200_000_000:
+                return {"ok": False, "reason": f"File too small ({file_size//1048576}MB) for {duration/60:.0f}min video — likely fake"}
+
+            logger.debug(f"Verified: {file_path.name} — {width}x{height}, {duration:.0f}s, {file_size//1048576}MB")
+            return {"ok": True, "width": width, "height": height, "duration": duration}
+
+        except FileNotFoundError:
+            # FFprobe not installed — skip verification
+            logger.warning("FFprobe not found — skipping video verification")
+            return {"ok": True, "reason": "ffprobe not available"}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "reason": "FFprobe timed out — possibly corrupt file"}
+        except Exception as e:
+            logger.error(f"Video verification error: {e}")
+            return {"ok": True, "reason": f"Verification error: {e}"}
 
     def _parse_filename(self, filename: str, category: str) -> dict:
         """Parse a media filename into folder name and clean file name."""
