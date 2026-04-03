@@ -1403,3 +1403,69 @@ async def delete_request(request_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "Request not found")
     await db.delete(media_req)
     return {"deleted": True, "title": media_req.title}
+
+
+# ============================================================
+# SUBTITLES — search, download, serve for browser player
+# ============================================================
+
+from app.core.subtitles import subtitle_service
+from fastapi.responses import PlainTextResponse
+
+
+@api_router.get("/subtitles/search")
+async def search_subtitles(
+    q: str = "", imdb_id: str = "", tmdb_id: int = 0,
+    season: int = 0, episode: int = 0, languages: str = "en",
+):
+    """Search for subtitles."""
+    results = await subtitle_service.search(q, imdb_id, tmdb_id, season, episode, languages)
+    return {"results": results, "total": len(results)}
+
+
+@api_router.get("/subtitles/local/{file_token}")
+async def get_local_subtitles(file_token: str):
+    """Find subtitle files next to a media file."""
+    file_path = _resolve_token(file_token)
+    subs = subtitle_service.find_local_subtitles(str(file_path))
+    # Generate stream URLs for each subtitle
+    for sub in subs:
+        import base64
+        rel = str(_Path(sub["path"]).relative_to(settings.paths.media_root))
+        sub["stream_url"] = "/api/subtitles/serve/" + base64.urlsafe_b64encode(rel.encode()).decode()
+    return {"subtitles": subs, "total": len(subs)}
+
+
+@api_router.get("/subtitles/serve/{file_token}")
+async def serve_subtitle(file_token: str):
+    """Serve a subtitle file, converting SRT to VTT for browser playback."""
+    try:
+        rel_path = _b64.urlsafe_b64decode(file_token).decode()
+    except Exception:
+        raise HTTPException(400, "Invalid token")
+
+    sub_path = settings.paths.media_root / rel_path
+    try:
+        sub_path.resolve().relative_to(settings.paths.media_root.resolve())
+    except ValueError:
+        raise HTTPException(403, "Path traversal blocked")
+
+    if not sub_path.is_file():
+        raise HTTPException(404, "Subtitle file not found")
+
+    content = sub_path.read_text(encoding="utf-8", errors="replace")
+
+    # Convert SRT to VTT for browser compatibility
+    if sub_path.suffix.lower() == ".srt":
+        content = subtitle_service.srt_to_vtt(content)
+        return PlainTextResponse(content, media_type="text/vtt")
+    elif sub_path.suffix.lower() == ".vtt":
+        return PlainTextResponse(content, media_type="text/vtt")
+    else:
+        return PlainTextResponse(content, media_type="text/plain")
+
+
+@api_router.get("/subtitles/status")
+async def subtitle_status():
+    """Get subtitle service status."""
+    return subtitle_service.stats

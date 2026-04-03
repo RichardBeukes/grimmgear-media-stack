@@ -1152,7 +1152,7 @@ function showDetailModal(data, type, inLibrary) {
 }
 
 // ── Media Player ──────────────────────────────────────────
-function playMedia(streamUrl, title, type) {
+async function playMedia(streamUrl, title, type) {
     // Close any existing player
     document.querySelectorAll('.player-overlay').forEach(e=>e.remove());
 
@@ -1167,11 +1167,28 @@ function playMedia(streamUrl, title, type) {
         video.className = 'player-video';
         video.controls = true;
         video.autoplay = true;
+        video.crossOrigin = 'anonymous';
         video.src = streamUrl;
         video.onerror = () => toast('Cannot play this format in browser. Try MP4/WebM files.','error');
+
+        // Auto-load subtitles if available
+        const token = streamUrl.split('/api/stream/')[1];
+        if(token) {
+            const subs = await api('/subtitles/local/'+token);
+            if(subs?.subtitles?.length > 0) {
+                subs.subtitles.forEach((sub, i) => {
+                    const track = document.createElement('track');
+                    track.kind = 'subtitles';
+                    track.label = sub.language.toUpperCase()+' ('+sub.name+')';
+                    track.srclang = sub.language;
+                    track.src = sub.stream_url;
+                    if(i === 0) track.default = true;
+                    video.appendChild(track);
+                });
+            }
+        }
+
         overlay.appendChild(video);
-        // Keyboard shortcut to close
-        overlay.onkeydown = e => { if(e.key==='Escape') overlay.remove(); };
     } else if(type === 'audio') {
         const audioDiv = el('div','player-audio');
         const audio = document.createElement('audio');
@@ -1183,13 +1200,10 @@ function playMedia(streamUrl, title, type) {
         overlay.appendChild(audioDiv);
     }
 
-    overlay.appendChild(el('div','player-info','Press Escape or click \u00D7 to close'));
+    overlay.appendChild(el('div','player-info','Press Escape or click \u00D7 to close. Subtitles auto-loaded if available.'));
 
-    // Click backdrop to close
     overlay.onclick = e => { if(e.target === overlay) overlay.remove(); };
-
     document.body.appendChild(overlay);
-    // Focus for keyboard events
     overlay.tabIndex = -1;
     overlay.focus();
     overlay.onkeydown = e => { if(e.key === 'Escape') overlay.remove(); };
