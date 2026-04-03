@@ -111,7 +111,7 @@ class AuthSettings(BaseSettings):
 
 class Settings(BaseSettings):
     """Root settings — aggregates all config sections."""
-    app_name: str = "GrimmGear Media Stack"
+    app_name: str = "GrimmGear Mediarr"
     version: str = "0.1.0"
 
     server: ServerSettings = ServerSettings()

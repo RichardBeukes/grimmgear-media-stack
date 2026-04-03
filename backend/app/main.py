@@ -163,11 +163,21 @@ def create_app() -> FastAPI:
     # API routes
     app.include_router(api_router, prefix="/api")
 
-    # Serve frontend (until Svelte is built, serve a landing page)
-    from fastapi.responses import HTMLResponse
+    # Serve static files (CSS, JS)
+    import os
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    # Serve the SPA frontend
+    from fastapi.responses import HTMLResponse, FileResponse
 
     @app.get("/", response_class=HTMLResponse)
     async def root():
+        return FileResponse(os.path.join(static_dir, "index.html"))
+
+    # Keep the old landing page at /about for reference
+    @app.get("/about", response_class=HTMLResponse)
+    async def about():
         modules = registry.status()
         enabled = [f'<span style="color:#27c24c">{v["display_name"]}</span>' for k, v in modules.items() if v["enabled"]]
         disabled = [f'<span style="color:#666">{v["display_name"]}</span>' for k, v in modules.items() if not v["enabled"]]
