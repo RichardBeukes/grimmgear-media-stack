@@ -37,7 +37,8 @@ async def system_health(db: AsyncSession = Depends(get_db)):
 
     # Database check
     try:
-        await db.execute("SELECT 1")
+        from sqlalchemy import text
+        await db.execute(text("SELECT 1"))
         health["checks"]["database"] = "ok"
     except Exception as e:
         health["status"] = "unhealthy"
