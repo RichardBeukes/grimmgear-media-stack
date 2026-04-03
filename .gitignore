@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.db
+*.db-journal
+venv/
+.venv/
+node_modules/
+dist/
+build/
+.svelte-kit/
+*.egg-info/
+.idea/
+.vscode/

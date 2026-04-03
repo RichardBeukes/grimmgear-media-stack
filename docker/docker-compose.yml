@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  grimmgear:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile
+    container_name: grimmgear
+    ports:
+      - "7777:7777"    # Web UI + API
+      - "8200:8200"    # DLNA/UPnP
+    volumes:
+      - ./config:/config
+      - /path/to/media:/media
+      - /path/to/downloads:/downloads
+    environment:
+      - GG_DB_URL=sqlite:////config/grimmgear.db
+      - GG_PATH_MEDIA_ROOT=/media
+      - GG_PATH_DOWNLOAD_DIR=/downloads
+      - GG_SERVER_PORT=7777
+      - GG_MODULE_MOVIES=true
+      - GG_MODULE_TV=true
+      - GG_MODULE_MUSIC=false
+      - GG_MODULE_BOOKS=false
+      - GG_MODULE_STREAMING=true
+      - GG_MODULE_INDEXERS=true
+    restart: unless-stopped
+
+  # Optional: PostgreSQL for multi-user/scale
+  # postgres:
+  #   image: postgres:17
+  #   container_name: grimmgear-db
+  #   environment:
+  #     - POSTGRES_USER=grimmgear
+  #     - POSTGRES_PASSWORD=changeme
+  #     - POSTGRES_DB=grimmgear
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   ports:
+  #     - "5432:5432"
+
+# volumes:
+#   pgdata:
