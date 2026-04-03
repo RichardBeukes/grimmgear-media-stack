@@ -42,7 +42,7 @@ function navigate(page) {
     const overlay = document.querySelector('.mobile-overlay');
     if (overlay) overlay.classList.remove('active');
     // Route
-    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,library:renderLibrary,calendar:renderCalendar,requests:renderRequests,indexers:renderIndexers,blocklist:renderBlocklist,system:renderSystem,settings:renderSettings};
+    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,music:renderMusic,books:renderBooks,comics:renderComics,search:renderSearch,downloads:renderDownloads,library:renderLibrary,calendar:renderCalendar,requests:renderRequests,indexers:renderIndexers,blocklist:renderBlocklist,system:renderSystem,settings:renderSettings};
     (routes[page]||renderDashboard)();
     window.location.hash = page;
 }

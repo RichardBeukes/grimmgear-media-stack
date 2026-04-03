@@ -160,6 +160,53 @@ class Book(Base):
 
 
 # ============================================================
+# Comics Module
+# ============================================================
+
+class ComicPublisher(Base, MediaItemMixin):
+    __tablename__ = "comic_publishers"
+
+    comicvine_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    quality_profile_id: Mapped[int] = mapped_column(Integer, default=1)
+    root_folder: Mapped[str] = mapped_column(String(500), default="")
+
+    series: Mapped[list["ComicSeries"]] = relationship(back_populates="publisher", cascade="all, delete-orphan")
+
+
+class ComicSeries(Base):
+    __tablename__ = "comic_series"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    publisher_id: Mapped[int] = mapped_column(ForeignKey("comic_publishers.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(500))
+    comicvine_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    year_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    year_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    issue_count: Mapped[int] = mapped_column(Integer, default=0)
+    volume: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    monitored: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    publisher: Mapped["ComicPublisher"] = relationship(back_populates="series")
+    issues: Mapped[list["ComicIssue"]] = relationship(back_populates="series", cascade="all, delete-orphan")
+
+
+class ComicIssue(Base):
+    __tablename__ = "comic_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    series_id: Mapped[int] = mapped_column(ForeignKey("comic_series.id", ondelete="CASCADE"))
+    issue_number: Mapped[str] = mapped_column(String(20), default="1")
+    title: Mapped[str] = mapped_column(String(500), default="")
+    cover_date: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    has_file: Mapped[bool] = mapped_column(Boolean, default=False)
+    file_path: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    file_format: Mapped[str] = mapped_column(String(10), default="cbz")  # cbz, cbr, cb7, pdf
+    monitored: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    series: Mapped["ComicSeries"] = relationship(back_populates="issues")
+
+
+# ============================================================
 # Shared: Quality Profiles, Indexers, Download Queue
 # ============================================================
 
@@ -168,6 +215,7 @@ class QualityProfile(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100))
+    media_type: Mapped[str] = mapped_column(String(20), default="movie")  # movie, tv, music, book, audiobook, comic
     language: Mapped[str] = mapped_column(String(20), default="English")
     min_quality: Mapped[str] = mapped_column(String(50), default="HDTV-720p")
     cutoff: Mapped[str] = mapped_column(String(50), default="Bluray-1080p")

@@ -17,7 +17,8 @@ from app.core.download.qbit_client import qbit
 from app.core.search.indexer_search import indexer_engine
 from app.db.models import (
     Movie, Series, Season, Episode, Artist, Album, Track,
-    Author, Book, QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
+    Author, Book, ComicPublisher, ComicSeries, ComicIssue,
+    QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
     SystemSetting, RootFolder, DownloadClient as DownloadClientModel, NotificationAgent,
     BlocklistItem, Tag, TagAssignment, CustomFormat, ImportList,
     EventLog, NamingConfig, Backup,
@@ -564,10 +565,33 @@ async def seed_quality_profiles(db: AsyncSession):
         _profiles_seeded = True
         return
     defaults = [
-        QualityProfile(name="Any", language="English", min_quality="SDTV", cutoff="Bluray-1080p", upgrade_allowed=True),
-        QualityProfile(name="HD-1080p", language="English", min_quality="HDTV-720p", cutoff="Bluray-1080p", upgrade_allowed=True),
-        QualityProfile(name="Ultra-HD", language="English", min_quality="HDTV-1080p", cutoff="Remux-2160p", upgrade_allowed=True),
-        QualityProfile(name="SD", language="English", min_quality="SDTV", cutoff="DVD", upgrade_allowed=False),
+        # Video (Movies & TV)
+        QualityProfile(name="Any", media_type="movie", language="English", min_quality="SDTV", cutoff="Bluray-1080p", upgrade_allowed=True),
+        QualityProfile(name="HD-1080p", media_type="movie", language="English", min_quality="HDTV-720p", cutoff="Bluray-1080p", upgrade_allowed=True),
+        QualityProfile(name="Ultra-HD", media_type="movie", language="English", min_quality="HDTV-1080p", cutoff="Remux-2160p", upgrade_allowed=True),
+        QualityProfile(name="SD", media_type="movie", language="English", min_quality="SDTV", cutoff="DVD", upgrade_allowed=False),
+        # Music
+        QualityProfile(name="Lossless", media_type="music", language="Any", min_quality="FLAC", cutoff="FLAC-24bit", upgrade_allowed=True,
+                       items='["MP3-128","MP3-192","MP3-256","MP3-320","AAC-256","OGG-320","FLAC","FLAC-24bit","WAV","ALAC"]'),
+        QualityProfile(name="High Quality MP3", media_type="music", language="Any", min_quality="MP3-256", cutoff="MP3-320", upgrade_allowed=True,
+                       items='["MP3-128","MP3-192","MP3-256","MP3-320","AAC-256"]'),
+        QualityProfile(name="Any Audio", media_type="music", language="Any", min_quality="MP3-128", cutoff="FLAC", upgrade_allowed=True,
+                       items='["MP3-128","MP3-192","MP3-256","MP3-320","AAC-256","OGG-320","FLAC","FLAC-24bit","WAV","ALAC","WMA","APE"]'),
+        # Books (Ebooks)
+        QualityProfile(name="Ebook - Any Format", media_type="book", language="English", min_quality="MOBI", cutoff="EPUB", upgrade_allowed=True,
+                       items='["PDF","MOBI","EPUB","AZW3","FB2","LIT","LRF","PDB","DJVU"]'),
+        QualityProfile(name="Ebook - EPUB Preferred", media_type="book", language="English", min_quality="EPUB", cutoff="EPUB", upgrade_allowed=False,
+                       items='["EPUB","AZW3"]'),
+        # Audiobooks
+        QualityProfile(name="Audiobook - High Quality", media_type="audiobook", language="English", min_quality="MP3-128", cutoff="M4B-256", upgrade_allowed=True,
+                       items='["MP3-64","MP3-128","MP3-192","MP3-256","MP3-320","M4B-128","M4B-256","M4B-320","FLAC"]'),
+        QualityProfile(name="Audiobook - Any", media_type="audiobook", language="English", min_quality="MP3-64", cutoff="M4B-128", upgrade_allowed=True,
+                       items='["MP3-64","MP3-128","MP3-192","MP3-256","M4B-128","M4B-256"]'),
+        # Comics
+        QualityProfile(name="Comic - CBZ Preferred", media_type="comic", language="English", min_quality="CBR", cutoff="CBZ", upgrade_allowed=True,
+                       items='["CBR","CBZ","CB7","PDF"]'),
+        QualityProfile(name="Comic - Any Format", media_type="comic", language="English", min_quality="CBR", cutoff="CBZ", upgrade_allowed=True,
+                       items='["CBR","CBZ","CB7","PDF","EPUB"]'),
     ]
     for p in defaults:
         db.add(p)
@@ -1713,6 +1737,158 @@ async def books_library():
                 "path": str(item),
             })
     return {"books": books, "total": len(books)}
+
+
+# ============================================================
+# COMICS — Comic Vine metadata (replaces Mylar3)
+# ============================================================
+
+COMIC_EXT = {".cbz", ".cbr", ".cb7", ".pdf", ".epub"}
+
+@api_router.get("/comics/library")
+async def comics_library():
+    """List all comics on disk."""
+    comics_dir = settings.paths.media_root / "Comics"
+    if not comics_dir.exists():
+        return {"comics": [], "total": 0, "path": str(comics_dir)}
+
+    comics = []
+    for item in sorted(comics_dir.rglob("*")):
+        if item.is_file() and item.suffix.lower() in COMIC_EXT:
+            comics.append({
+                "name": item.name,
+                "format": item.suffix.lower().lstrip("."),
+                "size": item.stat().st_size,
+                "path": str(item),
+                "series": item.parent.name,
+            })
+    return {"comics": comics, "total": len(comics), "path": str(comics_dir)}
+
+
+@api_router.get("/comics/series")
+async def list_comic_series(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ComicSeries))
+    series = result.scalars().all()
+    return [{"id": s.id, "title": s.title, "publisher_id": s.publisher_id,
+             "comicvine_id": s.comicvine_id, "year_start": s.year_start,
+             "issue_count": s.issue_count, "monitored": s.monitored}
+            for s in series]
+
+
+@api_router.get("/comics/publishers")
+async def list_comic_publishers(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ComicPublisher))
+    return [{"id": p.id, "title": p.title, "comicvine_id": p.comicvine_id,
+             "poster_url": p.poster_url}
+            for p in result.scalars().all()]
+
+
+@api_router.get("/comics/search")
+async def search_comics(q: str = Query(..., min_length=1)):
+    """Search Comic Vine for comics (uses free API)."""
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://comicvine.gamespot.com/api/search/",
+                params={"query": q, "format": "json", "resources": "volume",
+                        "limit": 20, "field_list": "id,name,start_year,count_of_issues,publisher,image,description"},
+                headers={"User-Agent": "GrimmGear-Mediarr/1.0"},
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            return [
+                {
+                    "id": v.get("id"),
+                    "title": v.get("name", ""),
+                    "year": v.get("start_year"),
+                    "issues": v.get("count_of_issues", 0),
+                    "publisher": v.get("publisher", {}).get("name", "") if v.get("publisher") else "",
+                    "cover_url": v.get("image", {}).get("medium_url") if v.get("image") else None,
+                    "description": (v.get("description") or "")[:300],
+                }
+                for v in data.get("results", [])
+            ]
+    except Exception as e:
+        logger.error(f"Comic Vine search error: {e}")
+        return []
+
+
+# ============================================================
+# QUALITY PROFILES — per media type
+# ============================================================
+
+@api_router.get("/quality-profiles/by-type/{media_type}")
+async def get_quality_profiles_by_type(media_type: str, db: AsyncSession = Depends(get_db)):
+    """Get quality profiles for a specific media type."""
+    await seed_quality_profiles(db)
+    await db.commit()
+    result = await db.execute(select(QualityProfile).where(QualityProfile.media_type == media_type))
+    profiles = result.scalars().all()
+    # Also include profiles without a media_type (legacy)
+    if not profiles:
+        result = await db.execute(select(QualityProfile))
+        profiles = result.scalars().all()
+    return [{"id": p.id, "name": p.name, "media_type": p.media_type, "language": p.language,
+             "min_quality": p.min_quality, "cutoff": p.cutoff, "upgrade_allowed": p.upgrade_allowed,
+             "items": p.items} for p in profiles]
+
+
+@api_router.get("/quality-definitions")
+async def get_quality_definitions():
+    """Quality tiers per media type — like Sonarr Quality Definitions."""
+    return {
+        "movie": [
+            {"quality": "SDTV", "title": "SDTV", "min_size": 0, "max_size": 2000, "preferred_size": 1500},
+            {"quality": "DVD", "title": "DVD", "min_size": 0, "max_size": 4000, "preferred_size": 2000},
+            {"quality": "HDTV-720p", "title": "HDTV 720p", "min_size": 0, "max_size": 6000, "preferred_size": 3500},
+            {"quality": "HDTV-1080p", "title": "HDTV 1080p", "min_size": 0, "max_size": 15000, "preferred_size": 8000},
+            {"quality": "WEB-DL-720p", "title": "WEB-DL 720p", "min_size": 0, "max_size": 8000, "preferred_size": 5000},
+            {"quality": "WEB-DL-1080p", "title": "WEB-DL 1080p", "min_size": 0, "max_size": 20000, "preferred_size": 12000},
+            {"quality": "Bluray-720p", "title": "Bluray 720p", "min_size": 0, "max_size": 12000, "preferred_size": 7000},
+            {"quality": "Bluray-1080p", "title": "Bluray 1080p", "min_size": 0, "max_size": 35000, "preferred_size": 15000},
+            {"quality": "Remux-1080p", "title": "Remux 1080p", "min_size": 10000, "max_size": 60000, "preferred_size": 35000},
+            {"quality": "Bluray-2160p", "title": "Bluray 2160p", "min_size": 10000, "max_size": 80000, "preferred_size": 45000},
+            {"quality": "Remux-2160p", "title": "Remux 2160p", "min_size": 25000, "max_size": 120000, "preferred_size": 70000},
+        ],
+        "music": [
+            {"quality": "MP3-128", "title": "MP3 128kbps", "min_size": 0, "max_size": 5, "preferred_size": 3},
+            {"quality": "MP3-192", "title": "MP3 192kbps", "min_size": 0, "max_size": 8, "preferred_size": 5},
+            {"quality": "MP3-256", "title": "MP3 256kbps", "min_size": 0, "max_size": 10, "preferred_size": 7},
+            {"quality": "MP3-320", "title": "MP3 320kbps", "min_size": 0, "max_size": 15, "preferred_size": 10},
+            {"quality": "AAC-256", "title": "AAC 256kbps", "min_size": 0, "max_size": 10, "preferred_size": 7},
+            {"quality": "OGG-320", "title": "OGG Vorbis 320kbps", "min_size": 0, "max_size": 15, "preferred_size": 10},
+            {"quality": "FLAC", "title": "FLAC (Lossless)", "min_size": 10, "max_size": 80, "preferred_size": 35},
+            {"quality": "FLAC-24bit", "title": "FLAC 24-bit (Hi-Res)", "min_size": 30, "max_size": 200, "preferred_size": 80},
+            {"quality": "WAV", "title": "WAV (Uncompressed)", "min_size": 30, "max_size": 300, "preferred_size": 50},
+            {"quality": "ALAC", "title": "ALAC (Apple Lossless)", "min_size": 10, "max_size": 80, "preferred_size": 35},
+        ],
+        "book": [
+            {"quality": "PDF", "title": "PDF", "min_size": 0, "max_size": 500, "preferred_size": 10},
+            {"quality": "MOBI", "title": "MOBI (Kindle)", "min_size": 0, "max_size": 50, "preferred_size": 5},
+            {"quality": "EPUB", "title": "EPUB", "min_size": 0, "max_size": 50, "preferred_size": 5},
+            {"quality": "AZW3", "title": "AZW3 (Kindle)", "min_size": 0, "max_size": 50, "preferred_size": 5},
+            {"quality": "FB2", "title": "FB2", "min_size": 0, "max_size": 20, "preferred_size": 3},
+            {"quality": "DJVU", "title": "DJVU", "min_size": 0, "max_size": 200, "preferred_size": 20},
+        ],
+        "audiobook": [
+            {"quality": "MP3-64", "title": "MP3 64kbps", "min_size": 0, "max_size": 200, "preferred_size": 100},
+            {"quality": "MP3-128", "title": "MP3 128kbps", "min_size": 0, "max_size": 400, "preferred_size": 200},
+            {"quality": "MP3-192", "title": "MP3 192kbps", "min_size": 0, "max_size": 600, "preferred_size": 300},
+            {"quality": "MP3-256", "title": "MP3 256kbps", "min_size": 0, "max_size": 800, "preferred_size": 400},
+            {"quality": "M4B-128", "title": "M4B 128kbps (iTunes)", "min_size": 0, "max_size": 400, "preferred_size": 200},
+            {"quality": "M4B-256", "title": "M4B 256kbps (iTunes)", "min_size": 0, "max_size": 800, "preferred_size": 400},
+            {"quality": "FLAC", "title": "FLAC Audiobook", "min_size": 100, "max_size": 5000, "preferred_size": 2000},
+        ],
+        "comic": [
+            {"quality": "CBR", "title": "CBR (RAR Archive)", "min_size": 0, "max_size": 200, "preferred_size": 50},
+            {"quality": "CBZ", "title": "CBZ (ZIP Archive)", "min_size": 0, "max_size": 200, "preferred_size": 50},
+            {"quality": "CB7", "title": "CB7 (7z Archive)", "min_size": 0, "max_size": 200, "preferred_size": 50},
+            {"quality": "PDF", "title": "PDF Comic", "min_size": 0, "max_size": 500, "preferred_size": 100},
+            {"quality": "EPUB", "title": "EPUB Comic", "min_size": 0, "max_size": 300, "preferred_size": 80},
+        ],
+    }
 
 
 # ============================================================

@@ -1,4 +1,4 @@
-// GrimmGear Mediarr — Calendar, Blocklist, System Pages
+// GrimmGear Mediarr — Calendar, Blocklist, System, Music, Books, Comics Pages
 // Loaded after app.js
 
 // ── Calendar ─────────────────────────────────────────────
@@ -936,4 +936,350 @@ function showImportListEditor(container) {
     box.appendChild(saveBtn);
     modal.appendChild(box);
     document.body.appendChild(modal);
+}
+
+// ── Music ────────────────────────────────────────────────
+async function renderMusic() {
+    content.textContent = '';
+    content.appendChild(el('h1','page-title','Music'));
+    content.appendChild(el('p','page-subtitle','Music library management \u2014 replaces Lidarr'));
+
+    var results = await Promise.all([api('/music/library'), api('/quality-profiles/by-type/music'), api('/quality-definitions')]);
+    var library = results[0], profiles = results[1], qualDefs = results[2];
+
+    var statsDiv = el('div','stat-row');
+    var trackCount = library && library.items ? library.items.length : 0;
+    var totalSize = 0;
+    if (library && library.items) library.items.forEach(function(i) { totalSize += i.size || 0; });
+    function mkStat(label, value, sub, color) {
+        var c = el('div','stat-card');
+        var bar = el('div','accent-bar'); bar.style.background = color; c.appendChild(bar);
+        c.appendChild(el('div','stat-label',label));
+        c.appendChild(el('div','stat-value',String(value)));
+        c.appendChild(el('div','stat-sub',sub));
+        return c;
+    }
+    statsDiv.appendChild(mkStat('Tracks', trackCount, fmtBytes(totalSize), 'var(--green)'));
+    statsDiv.appendChild(mkStat('Profiles', profiles ? profiles.length : 0, 'music quality', 'var(--cyan)'));
+    content.appendChild(statsDiv);
+
+    // Search
+    var searchBar = el('div',''); searchBar.style.cssText = 'display:flex;gap:8px;margin:12px 0';
+    var searchIn = el('input','input'); searchIn.placeholder = 'Search artists on MusicBrainz...'; searchIn.style.flex = '1';
+    var searchBtn = el('button','btn','Search');
+    searchBar.appendChild(searchIn); searchBar.appendChild(searchBtn);
+    content.appendChild(searchBar);
+    var searchResults = el('div','');
+    content.appendChild(searchResults);
+    searchBtn.onclick = async function() {
+        if (!searchIn.value.trim()) return;
+        searchResults.textContent = '';
+        var data = await api('/music/search/artists?q=' + encodeURIComponent(searchIn.value));
+        if (!data || !data.length) { searchResults.appendChild(el('p','text-dim','No results')); return; }
+        var panel = el('div','panel');
+        panel.appendChild(el('div','panel-header','Results (' + data.length + ')'));
+        var body = el('div','panel-body');
+        for (var i = 0; i < data.length; i++) {
+            var a = data[i];
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)';
+            row.appendChild(el('span','',a.name || a.title || ''));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            if (a.type) row.appendChild(el('span','tag',a.type));
+            if (a.country) row.appendChild(el('span','text-dim',a.country));
+            body.appendChild(row);
+        }
+        panel.appendChild(body); searchResults.appendChild(panel);
+    };
+    searchIn.onkeydown = function(e) { if (e.key === 'Enter') searchBtn.click(); };
+
+    // Quality profiles
+    if (profiles && profiles.length) {
+        var qPanel = el('div','panel'); qPanel.style.marginTop = '12px';
+        qPanel.appendChild(el('div','panel-header','Music Quality Profiles'));
+        var qBody = el('div','panel-body');
+        for (var i = 0; i < profiles.length; i++) {
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:6px 0;gap:8px';
+            row.appendChild(el('span','',profiles[i].name));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            row.appendChild(el('span','tag tag-cyan', profiles[i].cutoff));
+            row.appendChild(el('span','text-dim', 'Min: ' + profiles[i].min_quality));
+            qBody.appendChild(row);
+        }
+        qPanel.appendChild(qBody); content.appendChild(qPanel);
+    }
+
+    // Quality definitions
+    if (qualDefs && qualDefs.music) {
+        var dPanel = el('div','panel'); dPanel.style.marginTop = '12px';
+        dPanel.appendChild(el('div','panel-header','Music Quality Definitions'));
+        var dBody = el('div','panel-body');
+        for (var i = 0; i < qualDefs.music.length; i++) {
+            var q = qualDefs.music[i];
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:4px 0;gap:8px';
+            row.appendChild(el('span','',q.title));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            row.appendChild(el('span','text-dim', q.min_size + '-' + q.max_size + ' MB/track'));
+            dBody.appendChild(row);
+        }
+        dPanel.appendChild(dBody); content.appendChild(dPanel);
+    }
+
+    // Library
+    if (library && library.items && library.items.length) {
+        var lPanel = el('div','panel'); lPanel.style.marginTop = '12px';
+        lPanel.appendChild(el('div','panel-header','Library (' + library.items.length + ' items)'));
+        var lBody = el('div','panel-body'); lBody.style.cssText = 'max-height:400px;overflow:auto';
+        for (var i = 0; i < Math.min(library.items.length, 100); i++) {
+            var item = library.items[i];
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px';
+            row.appendChild(el('span','',item.name));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            row.appendChild(el('span','text-dim',fmtBytes(item.size)));
+            lBody.appendChild(row);
+        }
+        if (library.items.length > 100) lBody.appendChild(el('p','text-dim','... and ' + (library.items.length - 100) + ' more'));
+        lPanel.appendChild(lBody); content.appendChild(lPanel);
+    }
+}
+
+// ── Books ────────────────────────────────────────────────
+async function renderBooks() {
+    content.textContent = '';
+    content.appendChild(el('h1','page-title','Books & Audiobooks'));
+    content.appendChild(el('p','page-subtitle','Ebooks, audiobooks \u2014 replaces Readarr'));
+
+    var tabs = el('div','settings-tabs');
+    var tabNames = ['Ebooks','Audiobooks','Search','Quality'];
+    var tabContent = el('div','');
+    for (var i = 0; i < tabNames.length; i++) {
+        (function(t, idx) {
+            var btn = el('button','settings-tab' + (idx === 0 ? ' active' : ''), t);
+            btn.onclick = function() {
+                tabs.querySelectorAll('.settings-tab').forEach(function(b) { b.classList.toggle('active', b.textContent === t); });
+                renderBookTab(tabContent, t);
+            };
+            tabs.appendChild(btn);
+        })(tabNames[i], i);
+    }
+    content.appendChild(tabs);
+    content.appendChild(tabContent);
+    renderBookTab(tabContent, 'Ebooks');
+}
+
+async function renderBookTab(container, tab) {
+    container.textContent = '';
+    if (tab === 'Ebooks') {
+        var results = await Promise.all([api('/books/library'), api('/quality-profiles/by-type/book')]);
+        var library = results[0], profiles = results[1];
+        if (profiles && profiles.length) {
+            var pPanel = el('div','panel');
+            pPanel.appendChild(el('div','panel-header','Ebook Quality Profiles'));
+            var pBody = el('div','panel-body');
+            for (var i = 0; i < profiles.length; i++) {
+                var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:6px 0;gap:8px';
+                row.appendChild(el('span','',profiles[i].name));
+                var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+                row.appendChild(el('span','tag tag-cyan',profiles[i].cutoff));
+                pBody.appendChild(row);
+            }
+            pPanel.appendChild(pBody); container.appendChild(pPanel);
+        }
+        if (library && library.books && library.books.length) {
+            var lPanel = el('div','panel'); lPanel.style.marginTop = '12px';
+            lPanel.appendChild(el('div','panel-header','Library (' + library.books.length + ')'));
+            var lBody = el('div','panel-body'); lBody.style.cssText = 'max-height:400px;overflow:auto';
+            for (var i = 0; i < Math.min(library.books.length, 100); i++) {
+                var b = library.books[i];
+                var row = el('div','table-row'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
+                row.appendChild(el('span','',b.name));
+                var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+                row.appendChild(el('span','tag',b.format.toUpperCase()));
+                row.appendChild(el('span','text-dim',fmtBytes(b.size)));
+                lBody.appendChild(row);
+            }
+            lPanel.appendChild(lBody); container.appendChild(lPanel);
+        } else {
+            container.appendChild(el('p','text-dim','No ebooks found. Add books to D:\\Media\\Books.'));
+        }
+    } else if (tab === 'Audiobooks') {
+        var profiles = await api('/quality-profiles/by-type/audiobook');
+        if (profiles && profiles.length) {
+            var pPanel = el('div','panel');
+            pPanel.appendChild(el('div','panel-header','Audiobook Quality Profiles'));
+            var pBody = el('div','panel-body');
+            for (var i = 0; i < profiles.length; i++) {
+                var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:6px 0;gap:8px';
+                row.appendChild(el('span','',profiles[i].name));
+                var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+                row.appendChild(el('span','tag tag-green',profiles[i].cutoff));
+                pBody.appendChild(row);
+            }
+            pPanel.appendChild(pBody); container.appendChild(pPanel);
+        }
+        var qualDefs = await api('/quality-definitions');
+        if (qualDefs && qualDefs.audiobook) {
+            var dPanel = el('div','panel'); dPanel.style.marginTop = '12px';
+            dPanel.appendChild(el('div','panel-header','Audiobook Quality Definitions'));
+            var dBody = el('div','panel-body');
+            for (var i = 0; i < qualDefs.audiobook.length; i++) {
+                var q = qualDefs.audiobook[i];
+                var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:4px 0;gap:8px';
+                row.appendChild(el('span','',q.title));
+                var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+                row.appendChild(el('span','text-dim',q.min_size + '-' + q.max_size + ' MB'));
+                dBody.appendChild(row);
+            }
+            dPanel.appendChild(dBody); container.appendChild(dPanel);
+        }
+        container.appendChild(el('p','text-dim','Add audiobooks to D:\\Media\\Audiobooks.'));
+    } else if (tab === 'Search') {
+        var searchBar = el('div',''); searchBar.style.cssText = 'display:flex;gap:8px;margin:12px 0';
+        var searchIn = el('input','input'); searchIn.placeholder = 'Search books on OpenLibrary...'; searchIn.style.flex = '1';
+        var searchBtn = el('button','btn','Search');
+        searchBar.appendChild(searchIn); searchBar.appendChild(searchBtn);
+        container.appendChild(searchBar);
+        var resultsDiv = el('div',''); container.appendChild(resultsDiv);
+        searchBtn.onclick = async function() {
+            if (!searchIn.value.trim()) return;
+            resultsDiv.textContent = '';
+            var data = await api('/books/search?q=' + encodeURIComponent(searchIn.value));
+            if (!data || !data.length) { resultsDiv.appendChild(el('p','text-dim','No results')); return; }
+            var panel = el('div','panel');
+            panel.appendChild(el('div','panel-header','Results (' + data.length + ')'));
+            var body = el('div','panel-body');
+            for (var i = 0; i < data.length; i++) {
+                var b = data[i];
+                var row = el('div','table-row'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+                if (b.cover_url) { var img = el('img',''); img.src = b.cover_url; img.style.cssText = 'width:40px;height:60px;object-fit:cover;border-radius:4px'; row.appendChild(img); }
+                var info = el('div',''); info.style.flex = '1';
+                info.appendChild(el('div','',b.title));
+                info.appendChild(el('div','text-dim',b.author + (b.year ? ' (' + b.year + ')' : '')));
+                row.appendChild(info);
+                if (b.isbn) row.appendChild(el('span','tag','ISBN: ' + b.isbn));
+                body.appendChild(row);
+            }
+            panel.appendChild(body); resultsDiv.appendChild(panel);
+        };
+        searchIn.onkeydown = function(e) { if (e.key === 'Enter') searchBtn.click(); };
+    } else if (tab === 'Quality') {
+        var qualDefs = await api('/quality-definitions');
+        if (qualDefs && qualDefs.book) {
+            var panel = el('div','panel');
+            panel.appendChild(el('div','panel-header','Ebook Quality Definitions'));
+            var body = el('div','panel-body');
+            for (var i = 0; i < qualDefs.book.length; i++) {
+                var q = qualDefs.book[i];
+                var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:4px 0;gap:8px';
+                row.appendChild(el('span','',q.title));
+                var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+                row.appendChild(el('span','text-dim',q.min_size + '-' + q.max_size + ' MB'));
+                body.appendChild(row);
+            }
+            panel.appendChild(body); container.appendChild(panel);
+        }
+    }
+}
+
+// ── Comics ───────────────────────────────────────────────
+async function renderComics() {
+    content.textContent = '';
+    content.appendChild(el('h1','page-title','Comics'));
+    content.appendChild(el('p','page-subtitle','Comic management \u2014 replaces Mylar3'));
+
+    var results = await Promise.all([api('/comics/library'), api('/quality-profiles/by-type/comic'), api('/quality-definitions')]);
+    var library = results[0], profiles = results[1], qualDefs = results[2];
+
+    var statsDiv = el('div','stat-row');
+    var comicCount = library && library.comics ? library.comics.length : 0;
+    function mkStat(label, value, sub, color) {
+        var c = el('div','stat-card');
+        var bar = el('div','accent-bar'); bar.style.background = color; c.appendChild(bar);
+        c.appendChild(el('div','stat-label',label));
+        c.appendChild(el('div','stat-value',String(value)));
+        c.appendChild(el('div','stat-sub',sub));
+        return c;
+    }
+    statsDiv.appendChild(mkStat('Comics', comicCount, 'on disk', 'var(--orange)'));
+    statsDiv.appendChild(mkStat('Profiles', profiles ? profiles.length : 0, 'quality', 'var(--cyan)'));
+    content.appendChild(statsDiv);
+
+    // Search
+    var searchBar = el('div',''); searchBar.style.cssText = 'display:flex;gap:8px;margin:12px 0';
+    var searchIn = el('input','input'); searchIn.placeholder = 'Search comics on Comic Vine...'; searchIn.style.flex = '1';
+    var searchBtn = el('button','btn','Search');
+    searchBar.appendChild(searchIn); searchBar.appendChild(searchBtn);
+    content.appendChild(searchBar);
+    var searchResults = el('div',''); content.appendChild(searchResults);
+    searchBtn.onclick = async function() {
+        if (!searchIn.value.trim()) return;
+        searchResults.textContent = '';
+        var data = await api('/comics/search?q=' + encodeURIComponent(searchIn.value));
+        if (!data || !data.length) { searchResults.appendChild(el('p','text-dim','No results')); return; }
+        var panel = el('div','panel');
+        panel.appendChild(el('div','panel-header','Results (' + data.length + ')'));
+        var body = el('div','panel-body');
+        for (var i = 0; i < data.length; i++) {
+            var c = data[i];
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+            if (c.cover_url) { var img = el('img',''); img.src = c.cover_url; img.style.cssText = 'width:50px;height:75px;object-fit:cover;border-radius:4px'; row.appendChild(img); }
+            var info = el('div',''); info.style.flex = '1';
+            info.appendChild(el('div','',c.title));
+            info.appendChild(el('div','text-dim',(c.publisher || '') + (c.year ? ' (' + c.year + ')' : '') + ' \u2014 ' + c.issues + ' issues'));
+            row.appendChild(info);
+            body.appendChild(row);
+        }
+        panel.appendChild(body); searchResults.appendChild(panel);
+    };
+    searchIn.onkeydown = function(e) { if (e.key === 'Enter') searchBtn.click(); };
+
+    // Quality profiles
+    if (profiles && profiles.length) {
+        var qPanel = el('div','panel'); qPanel.style.marginTop = '12px';
+        qPanel.appendChild(el('div','panel-header','Comic Quality Profiles'));
+        var qBody = el('div','panel-body');
+        for (var i = 0; i < profiles.length; i++) {
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:6px 0;gap:8px';
+            row.appendChild(el('span','',profiles[i].name));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            row.appendChild(el('span','tag tag-orange',profiles[i].cutoff));
+            qBody.appendChild(row);
+        }
+        qPanel.appendChild(qBody); content.appendChild(qPanel);
+    }
+
+    // Quality definitions
+    if (qualDefs && qualDefs.comic) {
+        var dPanel = el('div','panel'); dPanel.style.marginTop = '12px';
+        dPanel.appendChild(el('div','panel-header','Comic Quality Definitions'));
+        var dBody = el('div','panel-body');
+        for (var i = 0; i < qualDefs.comic.length; i++) {
+            var q = qualDefs.comic[i];
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;padding:4px 0;gap:8px';
+            row.appendChild(el('span','',q.title));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            row.appendChild(el('span','text-dim',q.min_size + '-' + q.max_size + ' MB'));
+            dBody.appendChild(row);
+        }
+        dPanel.appendChild(dBody); content.appendChild(dPanel);
+    }
+
+    // Library
+    if (library && library.comics && library.comics.length) {
+        var lPanel = el('div','panel'); lPanel.style.marginTop = '12px';
+        lPanel.appendChild(el('div','panel-header','Comic Library (' + library.comics.length + ')'));
+        var lBody = el('div','panel-body'); lBody.style.cssText = 'max-height:400px;overflow:auto';
+        for (var i = 0; i < Math.min(library.comics.length, 100); i++) {
+            var c = library.comics[i];
+            var row = el('div','table-row'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
+            row.appendChild(el('span','',c.name));
+            var sp = el('span',''); sp.style.flex = '1'; row.appendChild(sp);
+            row.appendChild(el('span','tag',c.format.toUpperCase()));
+            row.appendChild(el('span','text-dim',c.series));
+            row.appendChild(el('span','text-dim',fmtBytes(c.size)));
+            lBody.appendChild(row);
+        }
+        lPanel.appendChild(lBody); content.appendChild(lPanel);
+    } else {
+        content.appendChild(el('p','text-dim','No comics found. Add comics to D:\\Media\\Comics.'));
+    }
 }
