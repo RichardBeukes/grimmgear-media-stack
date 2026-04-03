@@ -163,6 +163,64 @@ def create_app() -> FastAPI:
     # API routes
     app.include_router(api_router, prefix="/api")
 
+    # Serve frontend (until Svelte is built, serve a landing page)
+    from fastapi.responses import HTMLResponse
+
+    @app.get("/", response_class=HTMLResponse)
+    async def root():
+        modules = registry.status()
+        enabled = [f'<span style="color:#27c24c">{v["display_name"]}</span>' for k, v in modules.items() if v["enabled"]]
+        disabled = [f'<span style="color:#666">{v["display_name"]}</span>' for k, v in modules.items() if not v["enabled"]]
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GrimmGear Media Stack</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,'Segoe UI',sans-serif;background:#202020;color:#ccc;min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.container{{max-width:640px;padding:40px}}
+h1{{font-size:28px;font-weight:300;color:#e1e2e3;margin-bottom:8px}}
+h1 b{{font-weight:700;background:linear-gradient(135deg,#35c5f4,#ffc230);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.version{{color:#666;font-size:13px;margin-bottom:32px}}
+.section{{margin-bottom:24px}}
+.section-title{{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#666;margin-bottom:8px}}
+.modules{{display:flex;flex-wrap:wrap;gap:8px}}
+.modules span{{font-size:13px;padding:4px 12px;background:#333;border-radius:4px}}
+.links{{margin-top:32px;display:flex;gap:16px}}
+.links a{{color:#5d9cec;text-decoration:none;font-size:14px}}
+.links a:hover{{text-decoration:underline}}
+.tagline{{color:#555;font-size:13px;margin-top:24px;font-style:italic}}
+</style>
+</head>
+<body>
+<div class="container">
+<h1><b>GrimmGear</b> Media Stack</h1>
+<div class="version">v{settings.version} — One system. Every media type. Toggle what you need.</div>
+
+<div class="section">
+<div class="section-title">Enabled Modules</div>
+<div class="modules">{" ".join(enabled)}</div>
+</div>
+
+<div class="section">
+<div class="section-title">Available Modules</div>
+<div class="modules">{" ".join(disabled)}</div>
+</div>
+
+<div class="links">
+<a href="/api/docs">API Docs</a>
+<a href="/api/system/status">System Status</a>
+<a href="/api/modules">Module Registry</a>
+<a href="/api/system/health">Health Check</a>
+</div>
+
+<div class="tagline">Replaces 30+ self-hosted media tools. Built on the *arr community's shoulders.</div>
+</div>
+</body>
+</html>"""
+
     return app
 
 
