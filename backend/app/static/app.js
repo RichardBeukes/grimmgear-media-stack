@@ -58,15 +58,16 @@ async function renderDashboard() {
     _dashRendering = true;
     content.textContent = '';
 
-    const [status,health,movies,series,downloads,speed,scheduler] = await Promise.all([
-        api('/system/status'),api('/system/health'),api('/movies'),api('/series'),
-        api('/downloads'),api('/downloads/speed'),api('/scheduler/status')
+    // Fetch module status + system health
+    const [modules,health,speed,scheduler] = await Promise.all([
+        api('/modules'),api('/system/health'),api('/downloads/speed'),api('/scheduler/status')
     ]);
+    const enabled = modules ? Object.entries(modules).filter(([k,v])=>v.enabled).map(([k])=>k) : [];
 
     const dlSpeed = speed ? fmtSpeed(speed.dl_speed) : '0 MB/s';
     document.getElementById('dl-speed-mini').textContent = dlSpeed;
 
-    // Stats row
+    // Stats row — only show stats for enabled modules
     const statsDiv = el('div','stat-row');
     const mkStat = (label,value,sub,color,click) => {
         const c=el('div','stat-card'); if(click)c.onclick=()=>navigate(click);
@@ -76,77 +77,83 @@ async function renderDashboard() {
         c.appendChild(el('div','stat-sub',sub));
         return c;
     };
-    const movieCount = movies?movies.length:0;
-    const movieFiles = movies?movies.filter(m=>m.has_file).length:0;
-    statsDiv.appendChild(mkStat('Movies', movieCount, movieFiles+' on disk', 'var(--yellow)', 'movies'));
-    statsDiv.appendChild(mkStat('TV Series', series?series.length:0, '', 'var(--cyan)', 'tv'));
-    statsDiv.appendChild(mkStat('Downloads', dlSpeed, (downloads?downloads.total:0)+' active', 'var(--green)', 'downloads'));
     const healthColor = health?.status==='healthy'?'var(--green)':health?.status==='degraded'?'var(--orange)':'var(--red)';
-    statsDiv.appendChild(mkStat('System', health?health.status:'?', 'Scheduler: '+(scheduler?.running?scheduler.tasks.length+' tasks':'off'), healthColor, 'settings'));
+    statsDiv.appendChild(mkStat('System', health?health.status:'?', 'Scheduler: '+(scheduler?.running?scheduler.tasks.length+' tasks':'off'), healthColor, 'system'));
+    statsDiv.appendChild(mkStat('Speed', dlSpeed, '', 'var(--green)', 'downloads'));
+    statsDiv.appendChild(mkStat('Modules', enabled.length, enabled.length + ' active', 'var(--cyan)', 'settings'));
     content.appendChild(statsDiv);
 
-    // Active downloads panel
-    if (downloads?.torrents?.length > 0) {
-        const dlPanel = el('div','panel');
-        const dlHead = el('div','panel-header','Active Downloads ('+downloads.total+')');
-        dlPanel.appendChild(dlHead);
-        const dlBody = el('div','panel-body');
-        const active = downloads.torrents.filter(t=>t.dl_speed>0||t.progress<1).slice(0,8);
-        (active.length>0?active:downloads.torrents.slice(0,5)).forEach(t => {
-            const row = el('div','dl-row');
-            // State tag
-            const stateTag = el('span','tag '+dlStateClass(t.state)); stateTag.style.minWidth='65px'; stateTag.style.textAlign='center'; stateTag.textContent=dlStateLabel(t.state); row.appendChild(stateTag);
-            // Name
-            const nm = el('span','dl-name',t.name); row.appendChild(nm);
-            // Progress bar
-            const prog = el('div','progress');
-            const fill = el('div','progress-fill'+(t.progress>=1?' complete':t.state?.includes('paused')?' paused':' downloading'));
-            fill.style.width = (t.progress*100)+'%'; prog.appendChild(fill); row.appendChild(prog);
-            // Stats
-            const stats = el('div','dl-stats');
-            stats.appendChild(el('span','dl-stat',(t.progress*100).toFixed(0)+'%'));
-            stats.appendChild(el('span','dl-stat',fmtSpeed(t.dl_speed)));
-            row.appendChild(stats);
-            dlBody.appendChild(row);
-        });
-        dlPanel.appendChild(dlBody);
-        content.appendChild(dlPanel);
+    // For each enabled module, show a section with trending/upcoming
+    const dashSections = [
+        {module:'movies', label:'Movies', type:'movie', page:'movies', color:'var(--yellow)'},
+        {module:'tv', label:'TV Shows', type:'tv', page:'tv', color:'var(--cyan)'},
+        {module:'music', label:'Music', type:'music', page:'music', color:'var(--green)'},
+        {module:'books', label:'Books', type:'books', page:'books', color:'var(--orange)'},
+        {module:'comics', label:'Comics', type:'comics', page:'comics', color:'var(--red)'},
+    ];
+
+    for (const sec of dashSections) {
+        if (!enabled.includes(sec.module)) continue;
+
+        // Fetch popular + upcoming in parallel
+        const [popular, upcoming, ondisk] = await Promise.all([
+            api('/popular/' + sec.type),
+            api('/upcoming/' + sec.type),
+            api('/ondisk/' + sec.type),
+        ]);
+
+        const secDiv = el('div','');
+        secDiv.style.marginTop = '16px';
+
+        // Section header with on-disk count
+        const diskCount = ondisk ? ondisk.total_files : 0;
+        const diskSize = ondisk ? ondisk.total_size : 0;
+        const hdr = el('div','');
+        hdr.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer';
+        hdr.onclick = () => navigate(sec.page);
+        const hdrDot = el('span',''); hdrDot.style.cssText = 'width:4px;height:24px;border-radius:2px;background:'+sec.color;
+        hdr.appendChild(hdrDot);
+        hdr.appendChild(el('span','page-title',sec.label));
+        if (diskCount) hdr.appendChild(el('span','tag tag-green',diskCount + ' files'));
+        if (diskSize) hdr.appendChild(el('span','text-dim', fmtBytes(diskSize) + ' on disk'));
+        secDiv.appendChild(hdr);
+
+        // Popular row (poster cards)
+        if (popular?.items?.length) {
+            const pPanel = el('div','panel');
+            pPanel.appendChild(el('div','panel-header','Popular ' + sec.label));
+            const pBody = el('div','panel-body');
+            const row = el('div','scroll-row');
+            popular.items.slice(0,12).forEach(m => {
+                const card = mkMediaCard(m.title||'', m.date||'', m.poster_url||'', false);
+                if (m.tmdb_id) card.onclick = () => showTMDBDetail(sec.type, m.tmdb_id);
+                row.appendChild(card);
+            });
+            pBody.appendChild(row);
+            pPanel.appendChild(pBody);
+            secDiv.appendChild(pPanel);
+        }
+
+        // Upcoming row
+        if (upcoming?.items?.length) {
+            const uPanel = el('div','panel');
+            uPanel.style.marginTop = '8px';
+            uPanel.appendChild(el('div','panel-header','Upcoming ' + sec.label));
+            const uBody = el('div','panel-body');
+            const row = el('div','scroll-row');
+            upcoming.items.slice(0,12).forEach(m => {
+                const card = mkMediaCard(m.title||'', m.date||'', m.poster_url||m.cover_url||'', false);
+                if (m.tmdb_id) card.onclick = () => showTMDBDetail(sec.type, m.tmdb_id);
+                row.appendChild(card);
+            });
+            uBody.appendChild(row);
+            uPanel.appendChild(uBody);
+            secDiv.appendChild(uPanel);
+        }
+
+        content.appendChild(secDiv);
     }
 
-    // Trending movies
-    const trending = await api('/discover/movies/trending');
-    if (trending?.length > 0) {
-        const tPanel = el('div','panel');
-        const tHead = el('div','panel-header','Trending Movies');
-        tPanel.appendChild(tHead);
-        const tBody = el('div','panel-body');
-        const row = el('div','scroll-row');
-        trending.slice(0,15).forEach(m => {
-            const card = mkMediaCard(m.title, m.year, m.poster_url, false);
-            card.onclick = () => showTMDBDetail('movie', m.tmdb_id);
-            row.appendChild(card);
-        });
-        tBody.appendChild(row);
-        tPanel.appendChild(tBody);
-        content.appendChild(tPanel);
-    }
-
-    // Trending TV
-    const trendingTV = await api('/discover/tv/trending');
-    if (trendingTV?.length > 0) {
-        const tvPanel = el('div','panel');
-        tvPanel.appendChild(el('div','panel-header','Trending TV Shows'));
-        const tvBody = el('div','panel-body');
-        const row = el('div','scroll-row');
-        trendingTV.slice(0,15).forEach(s => {
-            const card = mkMediaCard(s.title, s.year, s.poster_url, false);
-            card.onclick = () => showTMDBDetail('tv', s.tmdb_id);
-            row.appendChild(card);
-        });
-        tvBody.appendChild(row);
-        tvPanel.appendChild(tvBody);
-        content.appendChild(tvPanel);
-    }
     _dashRendering = false;
 }
 

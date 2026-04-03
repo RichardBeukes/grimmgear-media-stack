@@ -207,9 +207,7 @@ async function renderCalendar() {
     content.appendChild(calArea);
 
     // Upcoming list below calendar
-    var upcomingPanel = el('div','panel');
-    upcomingPanel.style.marginTop = '12px';
-    content.appendChild(upcomingPanel);
+    // No trending/upcoming panel — calendar IS the upcoming view
 
     var data = await api('/calendar/smart');
     var events = (data && data.events) || [];
@@ -296,64 +294,51 @@ async function renderCalendar() {
     function drawYear() {
         calArea.textContent = '';
         monthLabel.textContent = String(_calViewDate.getFullYear());
-        var yearGrid = el('div','');
-        yearGrid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px';
-        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        var today = new Date().toISOString().split('T')[0];
+        var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        var today = new Date();
         for (var m = 0; m < 12; m++) {
-            var mPanel = el('div','');
-            mPanel.style.cssText = 'background:var(--card-bg);border-radius:6px;padding:8px;border:1px solid var(--border)';
-            var mHead = el('div','',months[m]);
-            mHead.style.cssText = 'font-weight:700;font-size:13px;margin-bottom:4px;text-align:center';
-            if (m === new Date().getMonth() && _calViewDate.getFullYear() === new Date().getFullYear()) mHead.style.color = 'var(--accent)';
-            mPanel.appendChild(mHead);
+            // Collect events for this month
             var mDays = new Date(_calViewDate.getFullYear(), m + 1, 0).getDate();
-            var miniGrid = el('div','');
-            miniGrid.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);gap:1px;font-size:9px';
-            var firstDay = new Date(_calViewDate.getFullYear(), m, 1).getDay();
-            for (var i = 0; i < firstDay; i++) miniGrid.appendChild(el('div',''));
+            var monthEvents = [];
             for (var d = 1; d <= mDays; d++) {
                 var ds = _calViewDate.getFullYear()+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
-                var dc = el('div','',String(d));
-                dc.style.cssText = 'text-align:center;padding:1px;border-radius:2px';
-                if (ds === today) { dc.style.background = 'var(--accent)'; dc.style.color = '#000'; dc.style.fontWeight = '700'; }
-                else if (grouped[ds]) { dc.style.background = typeColors[(grouped[ds][0]||{}).type] || 'var(--cyan)'; dc.style.color = '#000'; }
-                miniGrid.appendChild(dc);
+                var dayEvs = grouped[ds] || [];
+                for (var j = 0; j < dayEvs.length; j++) monthEvents.push(dayEvs[j]);
             }
-            mPanel.appendChild(miniGrid);
-            // Count events this month
-            var evCount = 0;
-            for (var d = 1; d <= mDays; d++) {
-                var ds = _calViewDate.getFullYear()+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
-                evCount += (grouped[ds]||[]).length;
+            // Only show months that have events, or current month
+            var isCurrent = (m === today.getMonth() && _calViewDate.getFullYear() === today.getFullYear());
+            if (!monthEvents.length && !isCurrent) continue;
+
+            var mPanel = el('div','panel');
+            mPanel.style.marginTop = '8px';
+            var mHead = el('div','panel-header', months[m] + (monthEvents.length ? ' (' + monthEvents.length + ')' : ''));
+            if (isCurrent) mHead.style.color = 'var(--accent)';
+            mHead.style.cursor = 'pointer';
+            (function(month) { mHead.onclick = function() { _calViewDate = new Date(_calViewDate.getFullYear(), month, 1); _calView = 'month'; draw(); }; })(m);
+            mPanel.appendChild(mHead);
+            var mBody = el('div','panel-body');
+            if (monthEvents.length) {
+                for (var j = 0; j < monthEvents.length; j++) {
+                    var ev = monthEvents[j];
+                    var row = el('div','table-row');
+                    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)';
+                    row.appendChild(el('span','tag ' + (tagColors[ev.type]||''), ev.type));
+                    var dateSpan = el('span','text-dim', ev.date ? ev.date.substring(5) : '');
+                    dateSpan.style.minWidth = '50px';
+                    row.appendChild(dateSpan);
+                    var t = el('span','',ev.title); t.style.flex = '1'; row.appendChild(t);
+                    if (ev.source) row.appendChild(el('span','text-dim',ev.source));
+                    mBody.appendChild(row);
+                }
+            } else {
+                mBody.appendChild(el('p','text-dim','No releases this month'));
             }
-            if (evCount) mPanel.appendChild(el('div','text-dim',evCount + ' events'));
-            mPanel.style.cursor = 'pointer';
-            (function(month) { mPanel.onclick = function() { _calViewDate = new Date(_calViewDate.getFullYear(), month, 1); _calView = 'month'; draw(); }; })(m);
-            yearGrid.appendChild(mPanel);
+            mPanel.appendChild(mBody);
+            calArea.appendChild(mPanel);
         }
-        calArea.appendChild(yearGrid);
     }
 
-    function drawUpcoming() {
-        upcomingPanel.textContent = '';
-        upcomingPanel.appendChild(el('div','panel-header','Upcoming Releases (' + events.length + ')'));
-        var body = el('div','panel-body');
-        body.style.maxHeight = '300px';
-        body.style.overflow = 'auto';
-        if (!events.length) { body.appendChild(el('p','text-dim','No upcoming events. Enable modules and add media.')); }
-        for (var i = 0; i < Math.min(events.length, 30); i++) {
-            var ev = events[i];
-            var row = el('div','table-row');
-            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)';
-            row.appendChild(el('span','tag ' + (tagColors[ev.type]||''), ev.type));
-            row.appendChild(el('span','text-dim', ev.date || ''));
-            var t = el('span','',ev.title); t.style.flex = '1'; row.appendChild(t);
-            if (ev.source) row.appendChild(el('span','text-dim', ev.source));
-            body.appendChild(row);
-        }
-        upcomingPanel.appendChild(body);
-    }
+    function drawUpcoming() { /* removed — calendar is the upcoming view */ }
 
     function draw() {
         btnMonth.className = 'btn btn-sm' + (_calView==='month'?' btn-primary':'');
