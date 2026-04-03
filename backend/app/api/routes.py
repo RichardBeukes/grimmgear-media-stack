@@ -18,6 +18,7 @@ from app.core.search.indexer_search import indexer_engine
 from app.db.models import (
     Movie, Series, Season, Episode, Artist, Album, Track,
     Author, Book, QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
+    SystemSetting, RootFolder, DownloadClient as DownloadClientModel, NotificationAgent,
 )
 from app.db.session import get_db
 from app.modules.registry import registry
@@ -1781,6 +1782,408 @@ async def setup_status(db: AsyncSession = Depends(get_db)):
         "media_root": str(settings.paths.media_root),
         "media_root_exists": settings.paths.media_root.exists(),
     }
+
+
+# ============================================================
+# SETTINGS — full configuration management (persisted to DB)
+# ============================================================
+
+import json as _json
+
+
+async def _get_setting(db: AsyncSession, key: str, default: str = "") -> str:
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    row = result.scalar_one_or_none()
+    return row.value if row else default
+
+
+async def _set_setting(db: AsyncSession, key: str, value: str, category: str = "general"):
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+    row = result.scalar_one_or_none()
+    if row:
+        row.value = value
+    else:
+        db.add(SystemSetting(key=key, value=value, category=category))
+
+
+# ── Root Folders (media paths per type) ───────────────────
+
+class AddRootFolderRequest(BaseModel):
+    path: str
+    media_type: str  # movie, tv, music, books, comics
+    name: str = ""
+
+
+@api_router.get("/settings/rootfolders")
+async def list_root_folders(db: AsyncSession = Depends(get_db)):
+    """List all configured root folders."""
+    result = await db.execute(select(RootFolder).order_by(RootFolder.media_type))
+    folders = []
+    for rf in result.scalars().all():
+        p = _Path(rf.path)
+        free = 0
+        try:
+            usage = _shutil.disk_usage(str(p))
+            free = usage.free
+        except Exception:
+            pass
+        folders.append({
+            "id": rf.id, "path": rf.path, "media_type": rf.media_type,
+            "name": rf.name, "exists": p.exists(), "free_space": free,
+        })
+    return {"folders": folders}
+
+
+@api_router.post("/settings/rootfolders")
+async def add_root_folder(req: AddRootFolderRequest, db: AsyncSession = Depends(get_db)):
+    """Add a root folder for a media type."""
+    p = _Path(req.path)
+    if not p.exists():
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise HTTPException(400, f"Cannot create folder: {e}")
+    rf = RootFolder(path=req.path, media_type=req.media_type, name=req.name or p.name)
+    db.add(rf)
+    await db.flush()
+    return {"id": rf.id, "added": True, "path": rf.path}
+
+
+@api_router.delete("/settings/rootfolders/{folder_id}")
+async def delete_root_folder(folder_id: int, db: AsyncSession = Depends(get_db)):
+    rf = await db.get(RootFolder, folder_id)
+    if not rf:
+        raise HTTPException(404, "Root folder not found")
+    await db.delete(rf)
+    return {"deleted": True}
+
+
+@api_router.get("/settings/browse")
+async def browse_filesystem(path: str = ""):
+    """Browse local filesystem for folder selection. Like Sonarr's folder picker."""
+    if not path:
+        # Return drive roots on Windows, / on Linux
+        if os.name == "nt":
+            import string
+            drives = []
+            for letter in string.ascii_uppercase:
+                dp = f"{letter}:\\"
+                if os.path.exists(dp):
+                    try:
+                        usage = _shutil.disk_usage(dp)
+                        drives.append({"name": dp, "path": dp, "type": "drive",
+                                       "free": usage.free, "total": usage.total})
+                    except Exception:
+                        drives.append({"name": dp, "path": dp, "type": "drive"})
+            return {"items": drives, "path": ""}
+        else:
+            path = "/"
+
+    target = _Path(path)
+    if not target.exists():
+        raise HTTPException(404, "Path not found")
+
+    items = []
+    try:
+        for item in sorted(target.iterdir()):
+            if item.name.startswith(".") or item.name.startswith("$"):
+                continue
+            if item.is_dir():
+                items.append({"name": item.name, "path": str(item), "type": "folder"})
+    except PermissionError:
+        pass
+
+    parent = str(target.parent) if str(target) != str(target.parent) else ""
+    return {"items": items, "path": str(target), "parent": parent}
+
+
+# ── Download Clients ──────────────────────────────────────
+
+class AddDownloadClientRequest(BaseModel):
+    name: str
+    client_type: str = "qbittorrent"
+    host: str = "localhost"
+    port: int = 8080
+    username: str = ""
+    password: str = ""
+    api_key: str = ""
+    category: str = "grimmgear"
+
+
+@api_router.get("/settings/downloadclients")
+async def list_download_clients(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(DownloadClientModel).order_by(DownloadClientModel.priority))
+    return [
+        {
+            "id": c.id, "name": c.name, "client_type": c.client_type,
+            "host": c.host, "port": c.port, "username": c.username,
+            "category": c.category, "enabled": c.enabled, "priority": c.priority,
+        }
+        for c in result.scalars().all()
+    ]
+
+
+@api_router.post("/settings/downloadclients")
+async def add_download_client(req: AddDownloadClientRequest, db: AsyncSession = Depends(get_db)):
+    client = DownloadClientModel(
+        name=req.name, client_type=req.client_type, host=req.host,
+        port=req.port, username=req.username, password=req.password,
+        api_key=req.api_key, category=req.category,
+    )
+    db.add(client)
+    await db.flush()
+    return {"id": client.id, "added": True, "name": client.name}
+
+
+@api_router.delete("/settings/downloadclients/{client_id}")
+async def delete_download_client(client_id: int, db: AsyncSession = Depends(get_db)):
+    client = await db.get(DownloadClientModel, client_id)
+    if not client:
+        raise HTTPException(404)
+    await db.delete(client)
+    return {"deleted": True}
+
+
+@api_router.post("/settings/downloadclients/test")
+async def test_download_client(req: AddDownloadClientRequest):
+    """Test connection to a download client."""
+    import httpx as _hx
+    if req.client_type == "qbittorrent":
+        url = f"http://{req.host}:{req.port}"
+        try:
+            async with _hx.AsyncClient(timeout=5.0) as client:
+                # Try login
+                resp = await client.post(f"{url}/api/v2/auth/login", data={
+                    "username": req.username, "password": req.password,
+                })
+                if resp.status_code == 200 and resp.text == "Ok.":
+                    # Get version
+                    ver_resp = await client.get(f"{url}/api/v2/app/version")
+                    return {"success": True, "version": ver_resp.text, "message": f"Connected to qBittorrent {ver_resp.text}"}
+                elif resp.status_code == 200:
+                    # No auth needed
+                    ver_resp = await client.get(f"{url}/api/v2/app/version")
+                    return {"success": True, "version": ver_resp.text, "message": f"Connected (no auth) to qBittorrent {ver_resp.text}"}
+                return {"success": False, "message": f"Auth failed: {resp.status_code} {resp.text}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    elif req.client_type == "sabnzbd":
+        url = f"http://{req.host}:{req.port}/api?mode=version&apikey={req.api_key}&output=json"
+        try:
+            async with _hx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    return {"success": True, "message": f"Connected to SABnzbd {resp.json().get('version','')}"}
+                return {"success": False, "message": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    return {"success": False, "message": f"Unknown client type: {req.client_type}"}
+
+
+# ── Notification Agents (persistent) ─────────────────────
+
+class AddNotificationAgentRequest(BaseModel):
+    name: str
+    agent_type: str  # discord, telegram, webhook
+    config: dict = {}  # discord_webhook_url, telegram_bot_token, telegram_chat_id, webhook_url
+    on_grab: bool = True
+    on_import: bool = True
+
+
+@api_router.get("/settings/notifications")
+async def list_notification_agents(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(NotificationAgent))
+    return [
+        {
+            "id": a.id, "name": a.name, "agent_type": a.agent_type,
+            "enabled": a.enabled, "on_grab": a.on_grab, "on_import": a.on_import,
+            "config_keys": list((a.config or {}).keys()),
+        }
+        for a in result.scalars().all()
+    ]
+
+
+@api_router.post("/settings/notifications")
+async def add_notification_agent(req: AddNotificationAgentRequest, db: AsyncSession = Depends(get_db)):
+    agent = NotificationAgent(
+        name=req.name, agent_type=req.agent_type,
+        config=req.config, on_grab=req.on_grab, on_import=req.on_import,
+    )
+    db.add(agent)
+    await db.flush()
+
+    # Also register with the in-memory notifier
+    from app.core.notifications.notifier import NotificationChannel
+    ch = NotificationChannel(
+        name=req.name, type=req.agent_type,
+        discord_webhook_url=req.config.get("discord_webhook_url", ""),
+        telegram_bot_token=req.config.get("telegram_bot_token", ""),
+        telegram_chat_id=req.config.get("telegram_chat_id", ""),
+        webhook_url=req.config.get("webhook_url", ""),
+    )
+    notifier.add_channel(ch)
+
+    return {"id": agent.id, "added": True, "name": agent.name}
+
+
+@api_router.post("/settings/notifications/{agent_id}/test")
+async def test_notification_agent(agent_id: int, db: AsyncSession = Depends(get_db)):
+    agent = await db.get(NotificationAgent, agent_id)
+    if not agent:
+        raise HTTPException(404)
+    return await notifier.test_channel(agent.name)
+
+
+@api_router.delete("/settings/notifications/{agent_id}")
+async def delete_notification_agent(agent_id: int, db: AsyncSession = Depends(get_db)):
+    agent = await db.get(NotificationAgent, agent_id)
+    if not agent:
+        raise HTTPException(404)
+    notifier.remove_channel(agent.name)
+    await db.delete(agent)
+    return {"deleted": True}
+
+
+# ── Media Server Config ───────────────────────────────────
+
+class MediaServerConfigRequest(BaseModel):
+    type: str = "built-in"  # built-in, plex, jellyfin, emby
+    url: str = ""
+    token: str = ""
+
+
+@api_router.get("/settings/mediaserver")
+async def get_media_server_config(db: AsyncSession = Depends(get_db)):
+    ms_type = await _get_setting(db, "media_server_type", settings.media_server.type)
+    ms_url = await _get_setting(db, "media_server_url", settings.media_server.url)
+    ms_token = await _get_setting(db, "media_server_token", "")
+    return {"type": ms_type, "url": ms_url, "has_token": bool(ms_token)}
+
+
+@api_router.put("/settings/mediaserver")
+async def update_media_server_config(req: MediaServerConfigRequest, db: AsyncSession = Depends(get_db)):
+    await _set_setting(db, "media_server_type", req.type, "media_server")
+    await _set_setting(db, "media_server_url", req.url, "media_server")
+    if req.token:
+        await _set_setting(db, "media_server_token", req.token, "media_server")
+    return {"saved": True}
+
+
+@api_router.post("/settings/mediaserver/test")
+async def test_media_server(req: MediaServerConfigRequest):
+    """Test connection to Plex/Jellyfin/Emby."""
+    import httpx as _hx
+    if req.type == "plex" and req.url and req.token:
+        try:
+            async with _hx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{req.url.rstrip('/')}/identity",
+                    headers={"X-Plex-Token": req.token, "Accept": "application/json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    name = data.get("MediaContainer", {}).get("friendlyName", "Plex")
+                    return {"success": True, "message": f"Connected to {name}"}
+                return {"success": False, "message": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    elif req.type == "jellyfin" and req.url and req.token:
+        try:
+            async with _hx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{req.url.rstrip('/')}/System/Info",
+                    headers={"X-Emby-Token": req.token},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {"success": True, "message": f"Connected to {data.get('ServerName','Jellyfin')} {data.get('Version','')}"}
+                return {"success": False, "message": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    elif req.type == "built-in":
+        return {"success": True, "message": "Using built-in media server (DLNA + web player)"}
+    return {"success": False, "message": "Invalid configuration"}
+
+
+# ── Quality Profiles (full CRUD) ─────────────────────────
+
+class QualityProfileRequest(BaseModel):
+    name: str
+    language: str = "English"
+    min_quality: str = "HDTV-720p"
+    cutoff: str = "Bluray-1080p"
+    upgrade_allowed: bool = True
+    items: list = []  # quality tier definitions
+
+
+@api_router.post("/qualityprofiles")
+async def create_quality_profile(req: QualityProfileRequest, db: AsyncSession = Depends(get_db)):
+    qp = QualityProfile(
+        name=req.name, language=req.language, min_quality=req.min_quality,
+        cutoff=req.cutoff, upgrade_allowed=req.upgrade_allowed, items=req.items,
+    )
+    db.add(qp)
+    await db.flush()
+    return {"id": qp.id, "created": True, "name": qp.name}
+
+
+@api_router.put("/qualityprofiles/{profile_id}")
+async def update_quality_profile(profile_id: int, req: QualityProfileRequest, db: AsyncSession = Depends(get_db)):
+    qp = await db.get(QualityProfile, profile_id)
+    if not qp:
+        raise HTTPException(404)
+    qp.name = req.name
+    qp.language = req.language
+    qp.min_quality = req.min_quality
+    qp.cutoff = req.cutoff
+    qp.upgrade_allowed = req.upgrade_allowed
+    qp.items = req.items
+    return {"id": qp.id, "updated": True}
+
+
+@api_router.delete("/qualityprofiles/{profile_id}")
+async def delete_quality_profile(profile_id: int, db: AsyncSession = Depends(get_db)):
+    qp = await db.get(QualityProfile, profile_id)
+    if not qp:
+        raise HTTPException(404)
+    await db.delete(qp)
+    return {"deleted": True}
+
+
+# ── General Settings ──────────────────────────────────────
+
+@api_router.get("/settings/general")
+async def get_general_settings(db: AsyncSession = Depends(get_db)):
+    """Get all configurable settings."""
+    return {
+        "app_name": await _get_setting(db, "app_name", settings.app_name),
+        "media_root": await _get_setting(db, "media_root", str(settings.paths.media_root)),
+        "download_dir": await _get_setting(db, "download_dir", str(settings.paths.download_dir)),
+        "dlna_enabled": await _get_setting(db, "dlna_enabled", "true") == "true",
+        "dlna_name": await _get_setting(db, "dlna_name", settings.dlna.friendly_name),
+    }
+
+
+class GeneralSettingsRequest(BaseModel):
+    app_name: str = ""
+    media_root: str = ""
+    download_dir: str = ""
+    dlna_enabled: bool = True
+    dlna_name: str = ""
+
+
+@api_router.put("/settings/general")
+async def update_general_settings(req: GeneralSettingsRequest, db: AsyncSession = Depends(get_db)):
+    if req.app_name:
+        await _set_setting(db, "app_name", req.app_name, "general")
+    if req.media_root:
+        await _set_setting(db, "media_root", req.media_root, "paths")
+    if req.download_dir:
+        await _set_setting(db, "download_dir", req.download_dir, "paths")
+    await _set_setting(db, "dlna_enabled", "true" if req.dlna_enabled else "false", "general")
+    if req.dlna_name:
+        await _set_setting(db, "dlna_name", req.dlna_name, "general")
+    return {"saved": True}
 
 
 # ============================================================

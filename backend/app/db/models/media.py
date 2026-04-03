@@ -232,3 +232,55 @@ class MediaRequest(Base):
     requester: Mapped[str] = mapped_column(String(100), default="anonymous")
     votes: Mapped[int] = mapped_column(Integer, default=1)
     note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+
+class SystemSetting(Base):
+    """Persistent key-value settings store. Survives restarts."""
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    value: Mapped[str] = mapped_column(String(5000), default="")
+    category: Mapped[str] = mapped_column(String(50), default="general")  # paths, download, media_server, notifications, general
+
+
+class RootFolder(Base):
+    """Configurable media root folders per content type."""
+    __tablename__ = "root_folders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    path: Mapped[str] = mapped_column(String(1000))
+    media_type: Mapped[str] = mapped_column(String(20))  # movie, tv, music, books, comics
+    name: Mapped[str] = mapped_column(String(200), default="")
+    free_space: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class DownloadClient(Base):
+    """Configured download clients (qBit, SABnzbd, etc)."""
+    __tablename__ = "download_clients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200))
+    client_type: Mapped[str] = mapped_column(String(50))  # qbittorrent, sabnzbd, transmission, deluge, nzbget
+    host: Mapped[str] = mapped_column(String(500))
+    port: Mapped[int] = mapped_column(Integer, default=8080)
+    username: Mapped[str] = mapped_column(String(200), default="")
+    password: Mapped[str] = mapped_column(String(200), default="")
+    api_key: Mapped[str] = mapped_column(String(200), default="")
+    category: Mapped[str] = mapped_column(String(100), default="grimmgear")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=1)  # lower = preferred
+
+
+class NotificationAgent(Base):
+    """Configured notification channels."""
+    __tablename__ = "notification_agents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200))
+    agent_type: Mapped[str] = mapped_column(String(50))  # discord, telegram, webhook, email
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)  # type-specific config
+    on_grab: Mapped[bool] = mapped_column(Boolean, default=True)
+    on_import: Mapped[bool] = mapped_column(Boolean, default=True)
+    on_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
+    on_health: Mapped[bool] = mapped_column(Boolean, default=False)

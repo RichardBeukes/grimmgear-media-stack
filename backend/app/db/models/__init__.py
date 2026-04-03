@@ -4,6 +4,7 @@ from .media import (
     Artist, Album, Track,
     Author, Book,
     QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
+    SystemSetting, RootFolder, DownloadClient, NotificationAgent,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "Artist", "Album", "Track",
     "Author", "Book",
     "QualityProfile", "Indexer", "DownloadQueueItem", "User", "MediaRequest",
+    "SystemSetting", "RootFolder", "DownloadClient", "NotificationAgent",
 ]

@@ -814,104 +814,489 @@ async function renderSettings() {
     content.textContent='';
     content.appendChild(el('div','page-title','Settings'));
 
-    const [status,modules,health,scheduler]=await Promise.all([api('/system/status'),api('/modules'),api('/system/health'),api('/scheduler/status')]);
+    // Settings tabs
+    const tabs = el('div','btn-group'); tabs.style.cssText='margin-bottom:16px;flex-wrap:wrap';
+    const sections = ['Media Management','Download Clients','Media Server','Notifications','Quality','Modules','System'];
+    sections.forEach((name,i) => {
+        const btn = el('button','btn '+(i===0?'btn-primary':'btn-ghost')+' btn-sm',name);
+        btn.onclick = () => {
+            tabs.querySelectorAll('.btn').forEach(b=>{b.className='btn btn-ghost btn-sm';});
+            btn.className='btn btn-primary btn-sm';
+            document.querySelectorAll('.settings-section').forEach(s=>s.style.display='none');
+            document.getElementById('settings-'+i).style.display='';
+        };
+        tabs.appendChild(btn);
+    });
+    content.appendChild(tabs);
 
-    // System info
-    const sysPanel = el('div','panel');
-    sysPanel.appendChild(el('div','panel-header','System'));
-    const sysBody = el('div','panel-body');
-    if(status){
-        [['Version',status.version],['Database',status.database],['Media Root',status.media_root],['Downloads',status.download_dir],['Media Server',status.media_server],
-         ['qBittorrent',status.download_client?(status.download_client.version+' ('+(status.download_client.connected?'connected':'offline')+')'):'N/A']
-        ].forEach(([k,v])=>{
+    // Container for all sections
+    const container = el('div','');
+
+    // ── Section 0: Media Management ──────────────────
+    const s0 = el('div','settings-section'); s0.id='settings-0';
+    // Root folders
+    const rfPanel = el('div','panel');
+    const rfHead = el('div','panel-header');
+    rfHead.appendChild(el('span','','Root Folders'));
+    const addRfBtn = el('button','btn btn-primary btn-sm','+ Add Folder');
+    addRfBtn.onclick = () => showAddRootFolder();
+    rfHead.appendChild(addRfBtn);
+    rfPanel.appendChild(rfHead);
+    const rfBody = el('div','panel-body');
+    const rootFolders = await api('/settings/rootfolders');
+    if(rootFolders?.folders?.length > 0){
+        rootFolders.folders.forEach(rf => {
             const row = el('div','table-row');
-            row.appendChild(el('span','',k)); const spacer=el('span',''); spacer.style.flex='1'; row.appendChild(spacer);
-            const val=el('span','',String(v)); val.style.color='var(--text-bright)'; row.appendChild(val);
-            sysBody.appendChild(row);
+            row.appendChild(el('span','tag tag-blue',rf.media_type));
+            const pathSpan = el('span','dl-name',rf.path); row.appendChild(pathSpan);
+            row.appendChild(el('span','tag '+(rf.exists?'tag-green':'tag-red'),rf.exists?'OK':'Missing'));
+            row.appendChild(el('span','dl-stat',fmtBytes(rf.free_space)+' free'));
+            const delBtn = el('button','btn btn-danger btn-xs','Remove');
+            delBtn.onclick=async()=>{await apiDelete('/settings/rootfolders/'+rf.id);renderSettings();};
+            row.appendChild(delBtn);
+            rfBody.appendChild(row);
         });
+    } else {
+        rfBody.appendChild(el('div','empty','No root folders configured. Add folders to tell Mediarr where your media lives.'));
     }
-    sysPanel.appendChild(sysBody); content.appendChild(sysPanel);
+    rfPanel.appendChild(rfBody);
+    s0.appendChild(rfPanel);
 
-    // Scheduler
-    const schedPanel = el('div','panel');
-    schedPanel.appendChild(el('div','panel-header','Background Scheduler'));
-    const schedBody = el('div','panel-body');
-    if(scheduler){
-        [['Running',scheduler.running?'Yes':'No'],['Tasks',scheduler.tasks?.join(', ')||'none'],['Last Import Scan',scheduler.last_import_scan],['Last RSS Sync',scheduler.last_rss_sync]
-        ].forEach(([k,v])=>{
+    // Add root folder form
+    const rfForm = el('div'); rfForm.id='add-rf-form'; s0.appendChild(rfForm);
+
+    // General paths
+    const genSettings = await api('/settings/general');
+    const gpPanel = el('div','panel');
+    gpPanel.appendChild(el('div','panel-header','General Paths'));
+    const gpBody = el('div','panel-body'); gpBody.style.cssText='display:grid;gap:8px;max-width:500px';
+    const mkField = (label,id,val) => {
+        const wrap=el('div',''); wrap.style.cssText='display:flex;align-items:center;gap:8px';
+        wrap.appendChild(el('label','',label)); const lbl=wrap.firstChild; lbl.style.cssText='min-width:110px;font-size:13px;color:var(--text-dim)';
+        const inp=el('input','search-input'); inp.id=id; inp.value=val||''; inp.style.flex='1'; wrap.appendChild(inp);
+        return wrap;
+    };
+    gpBody.appendChild(mkField('Media Root','gen-media-root',genSettings?.media_root||''));
+    gpBody.appendChild(mkField('Download Dir','gen-dl-dir',genSettings?.download_dir||''));
+    gpBody.appendChild(mkField('DLNA Name','gen-dlna-name',genSettings?.dlna_name||''));
+    const saveGenBtn = el('button','btn btn-success btn-sm','Save Paths');
+    saveGenBtn.onclick = async () => {
+        const r = await fetch(API+'/settings/general',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            media_root:document.getElementById('gen-media-root').value,
+            download_dir:document.getElementById('gen-dl-dir').value,
+            dlna_name:document.getElementById('gen-dlna-name').value,
+        })});
+        toast(r.ok?'Paths saved (restart to apply)':'Failed to save','success');
+    };
+    gpBody.appendChild(saveGenBtn);
+    gpPanel.appendChild(gpBody); s0.appendChild(gpPanel);
+    container.appendChild(s0);
+
+    // ── Section 1: Download Clients ──────────────────
+    const s1 = el('div','settings-section'); s1.id='settings-1'; s1.style.display='none';
+    const dcPanel = el('div','panel');
+    const dcHead = el('div','panel-header');
+    dcHead.appendChild(el('span','','Download Clients'));
+    const addDcBtn = el('button','btn btn-primary btn-sm','+ Add Client');
+    addDcBtn.onclick = () => showAddDownloadClient();
+    dcHead.appendChild(addDcBtn);
+    dcPanel.appendChild(dcHead);
+    const dcBody = el('div','panel-body');
+    const dlClients = await api('/settings/downloadclients');
+    if(dlClients?.length > 0){
+        dlClients.forEach(c => {
             const row = el('div','table-row');
-            row.appendChild(el('span','',k)); const spacer=el('span',''); spacer.style.flex='1'; row.appendChild(spacer);
-            const val=el('span','',v); val.style.color='var(--text-bright)'; row.appendChild(val);
-            schedBody.appendChild(row);
+            row.appendChild(el('span','tag '+(c.enabled?'tag-green':'tag-red'),c.enabled?'ON':'OFF'));
+            row.appendChild(el('span','tag tag-blue',c.client_type));
+            row.appendChild(el('span','dl-name',c.name+' ('+c.host+':'+c.port+')'));
+            row.appendChild(el('span','dl-stat','cat: '+c.category));
+            const delBtn = el('button','btn btn-danger btn-xs','Remove');
+            delBtn.onclick=async()=>{await apiDelete('/settings/downloadclients/'+c.id);renderSettings();};
+            row.appendChild(delBtn);
+            dcBody.appendChild(row);
         });
+    } else {
+        dcBody.appendChild(el('div','empty','No download clients. Add qBittorrent, SABnzbd, or other clients.'));
     }
-    schedPanel.appendChild(schedBody); content.appendChild(schedPanel);
+    dcPanel.appendChild(dcBody);
+    s1.appendChild(dcPanel);
+    const dcForm = el('div'); dcForm.id='add-dc-form'; s1.appendChild(dcForm);
+    container.appendChild(s1);
 
-    // Transcode section
-    const tcPanel = el('div','panel');
-    const tcHead = el('div','panel-header');
-    tcHead.appendChild(el('span','','Transcode (FFmpeg)'));
-    tcPanel.appendChild(tcHead);
-    const tcBody = el('div','panel-body');
-    const tcStatus = await api('/transcode/status');
-    if(tcStatus){
-        [['FFmpeg',tcStatus.ffmpeg||'not found'],['Running',tcStatus.running?'Yes':'No'],['Queue',String(tcStatus.queue_length)],
-         ['Completed',String(tcStatus.stats?.completed||0)],['Failed',String(tcStatus.stats?.failed||0)],
-         ['Space Saved',fmtBytes(tcStatus.stats?.bytes_saved||0)]
-        ].forEach(([k,v])=>{
+    // ── Section 2: Media Server ──────────────────────
+    const s2 = el('div','settings-section'); s2.id='settings-2'; s2.style.display='none';
+    const msPanel = el('div','panel');
+    msPanel.appendChild(el('div','panel-header','Media Server Connection'));
+    const msBody = el('div','panel-body'); msBody.style.cssText='display:grid;gap:8px;max-width:500px';
+    const msConfig = await api('/settings/mediaserver');
+    const msType = el('select','search-input'); msType.id='ms-type';
+    ['built-in','plex','jellyfin','emby'].forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t.charAt(0).toUpperCase()+t.slice(1);if(t===msConfig?.type)o.selected=true;msType.appendChild(o);});
+    msBody.appendChild(mkField('Type','ms-type-wrap',''));
+    msBody.lastChild.querySelector('input')?.remove(); msBody.lastChild.appendChild(msType);
+    msBody.appendChild(mkField('URL','ms-url',msConfig?.url||''));
+    msBody.appendChild(mkField('Token','ms-token',''));
+    document.getElementById('ms-token')&&(document.getElementById('ms-token').type='password');
+    if(msConfig?.has_token) { const hint=el('div','page-subtitle','Token is set. Leave blank to keep current.'); msBody.appendChild(hint); }
+    const msBtns = el('div','btn-group');
+    const msTestBtn = el('button','btn btn-ghost btn-sm','Test Connection');
+    msTestBtn.onclick = async () => {
+        msTestBtn.textContent='Testing...';
+        const r = await apiPost('/settings/mediaserver/test',{type:msType.value,url:document.getElementById('ms-url').value,token:document.getElementById('ms-token').value||'placeholder'});
+        msTestBtn.textContent=r?.success?'Connected!':'Failed';
+        msTestBtn.className='btn '+(r?.success?'btn-success':'btn-danger')+' btn-sm';
+        toast(r?.message||'Test complete',r?.success?'success':'error');
+    };
+    msBtns.appendChild(msTestBtn);
+    const msSaveBtn = el('button','btn btn-success btn-sm','Save');
+    msSaveBtn.onclick = async () => {
+        const r = await fetch(API+'/settings/mediaserver',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            type:msType.value,url:document.getElementById('ms-url').value,token:document.getElementById('ms-token').value,
+        })});
+        toast(r.ok?'Media server saved':'Failed','success');
+    };
+    msBtns.appendChild(msSaveBtn);
+    const plexScanBtn = el('button','btn btn-primary btn-sm','Scan Plex Library');
+    plexScanBtn.onclick=async()=>{const r=await apiPost('/plex/scan');toast(r?.triggered?'Scan triggered':'Not configured','');};
+    msBtns.appendChild(plexScanBtn);
+    msBody.appendChild(msBtns);
+    msPanel.appendChild(msBody); s2.appendChild(msPanel);
+    container.appendChild(s2);
+
+    // ── Section 3: Notifications ─────────────────────
+    const s3 = el('div','settings-section'); s3.id='settings-3'; s3.style.display='none';
+    const ntPanel = el('div','panel');
+    const ntHead = el('div','panel-header');
+    ntHead.appendChild(el('span','','Notification Channels'));
+    const addNtBtn = el('button','btn btn-primary btn-sm','+ Add Channel');
+    addNtBtn.onclick = () => showAddNotification();
+    ntHead.appendChild(addNtBtn);
+    ntPanel.appendChild(ntHead);
+    const ntBody = el('div','panel-body');
+    const agents = await api('/settings/notifications');
+    if(agents?.length > 0){
+        agents.forEach(a => {
             const row = el('div','table-row');
-            row.appendChild(el('span','',k)); const spacer=el('span',''); spacer.style.flex='1'; row.appendChild(spacer);
-            const val=el('span','',v); val.style.color='var(--text-bright)'; row.appendChild(val);
-            tcBody.appendChild(row);
+            row.appendChild(el('span','tag '+(a.enabled?'tag-green':'tag-red'),a.enabled?'ON':'OFF'));
+            row.appendChild(el('span','tag tag-blue',a.agent_type));
+            row.appendChild(el('span','dl-name',a.name));
+            const testBtn = el('button','btn btn-ghost btn-xs','Test');
+            testBtn.onclick=async()=>{testBtn.textContent='...';const r=await apiPost('/settings/notifications/'+a.id+'/test');toast(r?.success?'Sent!':'Failed','');testBtn.textContent='Test';};
+            row.appendChild(testBtn);
+            const delBtn = el('button','btn btn-danger btn-xs','Remove');
+            delBtn.onclick=async()=>{await apiDelete('/settings/notifications/'+a.id);renderSettings();};
+            row.appendChild(delBtn);
+            ntBody.appendChild(row);
         });
-        if(tcStatus.current){
-            const cur = el('div','table-row');
-            cur.appendChild(el('span','tag tag-blue','Transcoding'));
-            cur.appendChild(el('span','dl-name',tcStatus.current.source));
-            const prog = el('div','progress'); prog.style.maxWidth='100px';
-            const fill = el('div','progress-fill downloading'); fill.style.width=(tcStatus.current.progress*100)+'%'; prog.appendChild(fill);
-            cur.appendChild(prog);
-            cur.appendChild(el('span','dl-stat',(tcStatus.current.progress*100).toFixed(0)+'%'));
-            cur.appendChild(el('span','dl-stat',tcStatus.current.speed||''));
-            tcBody.appendChild(cur);
-        }
-    } else { tcBody.appendChild(el('div','','Transcode service not available')); }
-    tcPanel.appendChild(tcBody); content.appendChild(tcPanel);
+    } else { ntBody.appendChild(el('div','empty','No notification channels configured.')); }
+    ntPanel.appendChild(ntBody); s3.appendChild(ntPanel);
+    const ntForm = el('div'); ntForm.id='add-nt-form'; s3.appendChild(ntForm);
+    container.appendChild(s3);
 
-    // Plex section
-    const plexPanel = el('div','panel');
-    const plexHead = el('div','panel-header');
-    plexHead.appendChild(el('span','','Plex'));
-    const scanBtn = el('button','btn btn-primary btn-sm','Scan Library');
-    scanBtn.onclick=async()=>{ const r=await apiPost('/plex/scan'); toast(r?.triggered?'Plex scan triggered':'Plex: '+(r?.reason||'not configured'), r?.triggered?'success':'error'); };
-    plexHead.appendChild(scanBtn);
-    plexPanel.appendChild(plexHead);
-    const plexBody = el('div','panel-body');
-    plexBody.appendChild(el('div','',status?.media_server==='plex'?'Plex connected':'Configure Plex: set GG_MEDIA_SERVER_TYPE=plex, GG_MEDIA_SERVER_URL, GG_MEDIA_SERVER_TOKEN'));
-    plexPanel.appendChild(plexBody); content.appendChild(plexPanel);
+    // ── Section 4: Quality Profiles ──────────────────
+    const s4 = el('div','settings-section'); s4.id='settings-4'; s4.style.display='none';
+    const qpPanel = el('div','panel');
+    const qpHead = el('div','panel-header');
+    qpHead.appendChild(el('span','','Quality Profiles'));
+    const addQpBtn = el('button','btn btn-primary btn-sm','+ Add Profile');
+    addQpBtn.onclick = () => showAddQualityProfile();
+    qpHead.appendChild(addQpBtn);
+    qpPanel.appendChild(qpHead);
+    const qpBody = el('div','panel-body');
+    const profiles = await api('/qualityprofiles');
+    if(profiles?.length > 0){
+        profiles.forEach(p => {
+            const row = el('div','table-row');
+            row.appendChild(el('strong','',p.name));
+            const spacer=el('span','');spacer.style.flex='1';row.appendChild(spacer);
+            row.appendChild(el('span','tag tag-blue',p.language));
+            row.appendChild(el('span','dl-stat','Min: '+p.cutoff));
+            row.appendChild(el('span','tag '+(p.upgrade_allowed?'tag-green':'tag-orange'),p.upgrade_allowed?'Upgrade':'No Upgrade'));
+            const delBtn = el('button','btn btn-danger btn-xs','Remove');
+            delBtn.onclick=async()=>{await apiDelete('/qualityprofiles/'+p.id);renderSettings();};
+            row.appendChild(delBtn);
+            qpBody.appendChild(row);
+        });
+    } else { qpBody.appendChild(el('div','empty','No quality profiles.')); }
+    qpPanel.appendChild(qpBody); s4.appendChild(qpPanel);
+    const qpForm = el('div'); qpForm.id='add-qp-form'; s4.appendChild(qpForm);
+    container.appendChild(s4);
 
-    // Modules
+    // ── Section 5: Modules ───────────────────────────
+    const s5 = el('div','settings-section'); s5.id='settings-5'; s5.style.display='none';
     const modPanel = el('div','panel');
     modPanel.appendChild(el('div','panel-header','Modules'));
     const modBody = el('div','panel-body');
+    const modules = await api('/modules');
     if(modules){
         Object.entries(modules).forEach(([name,mod])=>{
             const row = el('div','table-row');
             const info = el('span',''); info.style.flex='1';
             info.appendChild(el('strong','',mod.display_name));
             info.appendChild(document.createElement('br'));
-            const desc = el('span','',mod.description); desc.style.cssText='font-size:11px;color:var(--text-dim)'; info.appendChild(desc);
+            const desc=el('span','',mod.description);desc.style.cssText='font-size:11px;color:var(--text-dim)';info.appendChild(desc);
             row.appendChild(info);
-            const label = el('label',''); label.style.cssText='cursor:pointer;display:flex;align-items:center;gap:6px';
-            const cb = document.createElement('input'); cb.type='checkbox'; cb.checked=mod.enabled;
-            cb.onchange=async function(){ await apiPost('/modules/'+name+'/'+(this.checked?'enable':'disable')); toast(mod.display_name+' '+(this.checked?'enabled':'disabled'),'success'); };
+            const label=el('label','');label.style.cssText='cursor:pointer;display:flex;align-items:center;gap:6px';
+            const cb=document.createElement('input');cb.type='checkbox';cb.checked=mod.enabled;
+            cb.onchange=async function(){await apiPost('/modules/'+name+'/'+(this.checked?'enable':'disable'));toast(mod.display_name+' '+(this.checked?'enabled':'disabled'),'success');};
             label.appendChild(cb);
-            const statusTag = el('span','tag '+(mod.enabled?'tag-green':'tag-orange'),mod.enabled?'ON':'OFF'); label.appendChild(statusTag);
+            label.appendChild(el('span','tag '+(mod.enabled?'tag-green':'tag-orange'),mod.enabled?'ON':'OFF'));
             row.appendChild(label);
             modBody.appendChild(row);
         });
     }
-    modPanel.appendChild(modBody); content.appendChild(modPanel);
+    modPanel.appendChild(modBody); s5.appendChild(modPanel);
+    container.appendChild(s5);
+
+    // ── Section 6: System ────────────────────────────
+    const s6 = el('div','settings-section'); s6.id='settings-6'; s6.style.display='none';
+    const [status,health,scheduler,tcStatus,disk] = await Promise.all([
+        api('/system/status'),api('/system/health'),api('/scheduler/status'),api('/transcode/status'),api('/cleanup/disk')
+    ]);
+    // System info
+    const sysPanel = el('div','panel');
+    sysPanel.appendChild(el('div','panel-header','System Info'));
+    const sysBody = el('div','panel-body');
+    if(status){
+        [['Version',status.version],['Database',status.database],['qBittorrent',status.download_client?(status.download_client.version+' ('+(status.download_client.connected?'connected':'offline')+')'):'N/A'],
+         ['Health',health?.status||'?'],['Scheduler',scheduler?.running?scheduler.tasks?.length+' tasks running':'off'],
+         ['FFmpeg',tcStatus?.ffmpeg||'not found'],['Last Import',scheduler?.last_import_scan||'never'],['Last RSS Sync',scheduler?.last_rss_sync||'never'],
+        ].forEach(([k,v])=>{
+            const row=el('div','table-row');row.appendChild(el('span','',k));const sp=el('span','');sp.style.flex='1';row.appendChild(sp);
+            const val=el('span','',String(v));val.style.color='var(--text-bright)';row.appendChild(val);sysBody.appendChild(row);
+        });
+    }
+    // Disk usage
+    if(disk){
+        for(const [name,info] of Object.entries(disk)){
+            if(info.error) continue;
+            const row=el('div','table-row');
+            row.appendChild(el('span','',name.charAt(0).toUpperCase()+name.slice(1)+' ('+info.path+')'));
+            const sp=el('span','');sp.style.flex='1';row.appendChild(sp);
+            const prog=el('div','progress');prog.style.maxWidth='100px';
+            const fill=el('div','progress-fill'+(info.percent>90?' paused':info.percent>70?' downloading':' complete'));
+            fill.style.width=info.percent+'%';prog.appendChild(fill);row.appendChild(prog);
+            row.appendChild(el('span','dl-stat',info.percent+'%'));
+            row.appendChild(el('span','dl-stat',fmtBytes(info.free)+' free'));
+            sysBody.appendChild(row);
+        }
+    }
+    sysPanel.appendChild(sysBody); s6.appendChild(sysPanel);
+    container.appendChild(s6);
+
+    content.appendChild(container);
+}
+
+// ── Settings: Add Root Folder Form ────────────────────────
+async function showAddRootFolder() {
+    const form = document.getElementById('add-rf-form'); if(!form) return;
+    form.textContent='';
+    const panel = el('div','panel');
+    panel.appendChild(el('div','panel-header','Add Root Folder'));
+    const body = el('div','panel-body'); body.style.cssText='display:grid;gap:8px;max-width:500px';
+    // Type selector
+    const typeWrap = el('div',''); typeWrap.style.cssText='display:flex;gap:8px';
+    const typeSelect = el('select','search-input'); typeSelect.id='rf-type';
+    ['movie','tv','music','books','comics'].forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t.charAt(0).toUpperCase()+t.slice(1);typeSelect.appendChild(o);});
+    typeWrap.appendChild(el('label','','Type:')); typeWrap.firstChild.style.cssText='min-width:60px;font-size:13px;color:var(--text-dim);display:flex;align-items:center';
+    typeWrap.appendChild(typeSelect);
+    body.appendChild(typeWrap);
+    // Path input + browse
+    const pathWrap = el('div',''); pathWrap.style.cssText='display:flex;gap:8px';
+    const pathInput = el('input','search-input'); pathInput.id='rf-path'; pathInput.placeholder='D:\\Media\\Movies'; pathInput.style.flex='1';
+    pathWrap.appendChild(pathInput);
+    const browseBtn = el('button','btn btn-ghost btn-sm','Browse...');
+    browseBtn.onclick = () => showFolderPicker('rf-path');
+    pathWrap.appendChild(browseBtn);
+    body.appendChild(pathWrap);
+    // Save button
+    const saveBtn = el('button','btn btn-success','Add Root Folder');
+    saveBtn.onclick = async () => {
+        const path = document.getElementById('rf-path').value;
+        const type = document.getElementById('rf-type').value;
+        if(!path){toast('Path required','error');return;}
+        const r = await apiPost('/settings/rootfolders',{path:path,media_type:type});
+        if(r?.added){toast('Added: '+path,'success');renderSettings();} else toast('Failed','error');
+    };
+    body.appendChild(saveBtn);
+    panel.appendChild(body); form.appendChild(panel);
+    form.scrollIntoView({behavior:'smooth'});
+}
+
+async function showFolderPicker(targetInputId) {
+    const overlay = el('div','modal-overlay');
+    overlay.onclick = e => {if(e.target===overlay)overlay.remove();};
+    const modal = el('div','modal'); modal.style.cssText='max-width:500px;padding:20px;max-height:70vh;overflow-y:auto';
+    modal.appendChild(el('div','detail-title','Select Folder'));
+
+    async function loadDir(path) {
+        modal.querySelectorAll('.folder-list').forEach(e=>e.remove());
+        const data = await api('/settings/browse?path='+encodeURIComponent(path||''));
+        if(!data) return;
+        const list = el('div','folder-list');
+        if(data.parent){
+            const backRow = el('div','file-row');
+            backRow.appendChild(el('span','file-icon','\u2190'));
+            backRow.appendChild(el('span','file-name','.. (up)'));
+            backRow.onclick = () => loadDir(data.parent);
+            list.appendChild(backRow);
+        }
+        // Current path display
+        const curPath = el('div',''); curPath.style.cssText='padding:8px 0;font-size:12px;color:var(--text-dim)';
+        curPath.textContent = data.path || 'Drives'; list.appendChild(curPath);
+
+        data.items.forEach(item => {
+            const row = el('div','file-row');
+            row.appendChild(el('span','file-icon',item.type==='drive'?'\uD83D\uDCBB':'\uD83D\uDCC1'));
+            const name = el('span','file-name',item.name); row.appendChild(name);
+            if(item.free) row.appendChild(el('span','file-meta',fmtBytes(item.free)+' free'));
+            row.onclick = () => loadDir(item.path);
+            list.appendChild(row);
+        });
+
+        // Select this folder button
+        if(data.path){
+            const selectBtn = el('button','btn btn-success','Select This Folder: '+data.path.split(/[\\/]/).pop());
+            selectBtn.style.cssText='margin-top:12px;width:100%';
+            selectBtn.onclick = () => { document.getElementById(targetInputId).value=data.path; overlay.remove(); };
+            list.appendChild(selectBtn);
+        }
+        modal.appendChild(list);
+    }
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    loadDir('');
+}
+
+// ── Settings: Add Download Client Form ────────────────────
+function showAddDownloadClient() {
+    const form = document.getElementById('add-dc-form'); if(!form) return;
+    form.textContent='';
+    const panel = el('div','panel');
+    panel.appendChild(el('div','panel-header','Add Download Client'));
+    const body = el('div','panel-body'); body.style.cssText='display:grid;gap:8px;max-width:500px';
+    const typeSelect = el('select','search-input'); typeSelect.id='dc-type';
+    [['qbittorrent','qBittorrent'],['sabnzbd','SABnzbd'],['transmission','Transmission'],['deluge','Deluge'],['nzbget','NZBGet']].forEach(([v,l])=>{
+        const o=document.createElement('option');o.value=v;o.textContent=l;typeSelect.appendChild(o);
+    });
+    body.appendChild(typeSelect);
+    const mkI=(id,ph,type)=>{const i=el('input','search-input');i.id=id;i.placeholder=ph;if(type)i.type=type;return i;};
+    body.appendChild(mkI('dc-name','Name (e.g. Main qBit)'));
+    body.appendChild(mkI('dc-host','Host (e.g. localhost)'));
+    body.appendChild(mkI('dc-port','Port (e.g. 8081)'));
+    body.appendChild(mkI('dc-user','Username'));
+    body.appendChild(mkI('dc-pass','Password','password'));
+    body.appendChild(mkI('dc-cat','Category (e.g. grimmgear)'));
+    const btns = el('div','btn-group');
+    const testBtn = el('button','btn btn-ghost','Test');
+    testBtn.onclick = async () => {
+        testBtn.textContent='Testing...';
+        const r = await apiPost('/settings/downloadclients/test',{
+            name:'test',client_type:typeSelect.value,
+            host:document.getElementById('dc-host').value||'localhost',
+            port:parseInt(document.getElementById('dc-port').value)||8080,
+            username:document.getElementById('dc-user').value,
+            password:document.getElementById('dc-pass').value,
+        });
+        testBtn.textContent=r?.success?'Connected!':'Failed';
+        testBtn.className='btn '+(r?.success?'btn-success':'btn-danger');
+        toast(r?.message||'Test complete',r?.success?'success':'error');
+    };
+    btns.appendChild(testBtn);
+    const saveBtn = el('button','btn btn-success','Save Client');
+    saveBtn.onclick = async () => {
+        const r = await apiPost('/settings/downloadclients',{
+            name:document.getElementById('dc-name').value||'qBittorrent',
+            client_type:typeSelect.value,
+            host:document.getElementById('dc-host').value||'localhost',
+            port:parseInt(document.getElementById('dc-port').value)||8080,
+            username:document.getElementById('dc-user').value,
+            password:document.getElementById('dc-pass').value,
+            category:document.getElementById('dc-cat').value||'grimmgear',
+        });
+        if(r?.added){toast('Added: '+r.name,'success');renderSettings();} else toast('Failed','error');
+    };
+    btns.appendChild(saveBtn);
+    body.appendChild(btns);
+    panel.appendChild(body); form.appendChild(panel);
+    form.scrollIntoView({behavior:'smooth'});
+}
+
+// ── Settings: Add Notification Channel Form ───────────────
+function showAddNotification() {
+    const form = document.getElementById('add-nt-form'); if(!form) return;
+    form.textContent='';
+    const panel = el('div','panel');
+    panel.appendChild(el('div','panel-header','Add Notification Channel'));
+    const body = el('div','panel-body'); body.style.cssText='display:grid;gap:8px;max-width:500px';
+    const typeSelect = el('select','search-input'); typeSelect.id='nt-type';
+    [['discord','Discord Webhook'],['telegram','Telegram Bot'],['webhook','Generic Webhook']].forEach(([v,l])=>{
+        const o=document.createElement('option');o.value=v;o.textContent=l;typeSelect.appendChild(o);
+    });
+    typeSelect.onchange = () => {
+        document.getElementById('nt-discord-url').parentElement.style.display=typeSelect.value==='discord'?'':'none';
+        document.getElementById('nt-tg-token').parentElement.style.display=typeSelect.value==='telegram'?'':'none';
+        document.getElementById('nt-tg-chat').parentElement.style.display=typeSelect.value==='telegram'?'':'none';
+        document.getElementById('nt-wh-url').parentElement.style.display=typeSelect.value==='webhook'?'':'none';
+    };
+    body.appendChild(typeSelect);
+    const mkI=(id,ph)=>{const w=el('div','');const i=el('input','search-input');i.id=id;i.placeholder=ph;w.appendChild(i);return w;};
+    body.appendChild(mkI('nt-name','Channel Name'));
+    body.appendChild(mkI('nt-discord-url','Discord Webhook URL'));
+    const tgToken=mkI('nt-tg-token','Telegram Bot Token');tgToken.style.display='none';body.appendChild(tgToken);
+    const tgChat=mkI('nt-tg-chat','Telegram Chat ID');tgChat.style.display='none';body.appendChild(tgChat);
+    const whUrl=mkI('nt-wh-url','Webhook URL');whUrl.style.display='none';body.appendChild(whUrl);
+    const saveBtn = el('button','btn btn-success','Add Channel');
+    saveBtn.onclick = async () => {
+        const type = typeSelect.value;
+        const config = {};
+        if(type==='discord') config.discord_webhook_url = document.getElementById('nt-discord-url').value;
+        if(type==='telegram'){config.telegram_bot_token=document.getElementById('nt-tg-token').value;config.telegram_chat_id=document.getElementById('nt-tg-chat').value;}
+        if(type==='webhook') config.webhook_url = document.getElementById('nt-wh-url').value;
+        const r = await apiPost('/settings/notifications',{name:document.getElementById('nt-name').value,agent_type:type,config:config});
+        if(r?.added){toast('Added: '+r.name,'success');renderSettings();} else toast('Failed','error');
+    };
+    body.appendChild(saveBtn);
+    panel.appendChild(body); form.appendChild(panel);
+    form.scrollIntoView({behavior:'smooth'});
+}
+
+// ── Settings: Add Quality Profile Form ────────────────────
+function showAddQualityProfile() {
+    const form = document.getElementById('add-qp-form'); if(!form) return;
+    form.textContent='';
+    const panel = el('div','panel');
+    panel.appendChild(el('div','panel-header','Add Quality Profile'));
+    const body = el('div','panel-body'); body.style.cssText='display:grid;gap:8px;max-width:500px';
+    const mkI=(id,ph)=>{const i=el('input','search-input');i.id=id;i.placeholder=ph;return i;};
+    body.appendChild(mkI('qp-name','Profile Name (e.g. HD-1080p)'));
+    const langSelect = el('select','search-input'); langSelect.id='qp-lang';
+    ['English','Any','French','German','Spanish','Japanese','Korean','Chinese','Portuguese','Italian'].forEach(l=>{
+        const o=document.createElement('option');o.value=l;o.textContent=l;langSelect.appendChild(o);
+    });
+    body.appendChild(langSelect);
+    const cutoffSelect = el('select','search-input'); cutoffSelect.id='qp-cutoff';
+    ['SDTV','DVD','HDTV-720p','HDTV-1080p','Bluray-720p','Bluray-1080p','Bluray-2160p','Remux-1080p','Remux-2160p'].forEach(q=>{
+        const o=document.createElement('option');o.value=q;o.textContent=q;if(q==='Bluray-1080p')o.selected=true;cutoffSelect.appendChild(o);
+    });
+    body.appendChild(cutoffSelect);
+    const upgradeWrap = el('label',''); upgradeWrap.style.cssText='display:flex;align-items:center;gap:8px;font-size:13px';
+    const upgradeCb = document.createElement('input'); upgradeCb.type='checkbox'; upgradeCb.id='qp-upgrade'; upgradeCb.checked=true;
+    upgradeWrap.appendChild(upgradeCb); upgradeWrap.appendChild(document.createTextNode('Allow upgrades'));
+    body.appendChild(upgradeWrap);
+    const saveBtn = el('button','btn btn-success','Create Profile');
+    saveBtn.onclick = async () => {
+        const r = await apiPost('/qualityprofiles',{
+            name:document.getElementById('qp-name').value,
+            language:langSelect.value,
+            cutoff:cutoffSelect.value,
+            upgrade_allowed:upgradeCb.checked,
+        });
+        if(r?.created){toast('Created: '+r.name,'success');renderSettings();} else toast('Failed','error');
+    };
+    body.appendChild(saveBtn);
+    panel.appendChild(body); form.appendChild(panel);
+    form.scrollIntoView({behavior:'smooth'});
 }
 
 // ── Detail Modal: Movie (from library) ────────────────────
