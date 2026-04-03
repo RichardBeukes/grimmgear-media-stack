@@ -1052,6 +1052,12 @@ async function renderSettings() {
     modPanel.appendChild(el('div','panel-header','Modules'));
     const modBody = el('div','panel-body');
     const modules = await api('/modules');
+    // Map module names to nav page data-page values
+    const moduleNavMap = {
+        movies:'movies', tv:'tv', music:'music', books:'books', comics:'comics',
+        subtitles:'library', transcode:'library', requests:'requests',
+        indexers:'indexers', streaming:'library',
+    };
     if(modules){
         Object.entries(modules).forEach(([name,mod])=>{
             const row = el('div','table-row');
@@ -1062,9 +1068,23 @@ async function renderSettings() {
             row.appendChild(info);
             const label=el('label','');label.style.cssText='cursor:pointer;display:flex;align-items:center;gap:6px';
             const cb=document.createElement('input');cb.type='checkbox';cb.checked=mod.enabled;
-            cb.onchange=async function(){await apiPost('/modules/'+name+'/'+(this.checked?'enable':'disable'));toast(mod.display_name+' '+(this.checked?'enabled':'disabled'),'success');};
+            const statusTag=el('span','tag '+(mod.enabled?'tag-green':'tag-orange'),mod.enabled?'ON':'OFF');
+            cb.onchange=async function(){
+                const enabling=this.checked;
+                await apiPost('/modules/'+name+'/'+(enabling?'enable':'disable'));
+                // Update tag live
+                statusTag.className='tag '+(enabling?'tag-green':'tag-orange');
+                statusTag.textContent=enabling?'ON':'OFF';
+                // Show/hide nav link live
+                const navPage=moduleNavMap[name];
+                if(navPage){
+                    const navLink=document.querySelector('.nav-link[data-page="'+navPage+'"]');
+                    if(navLink) navLink.style.display=enabling?'':'none';
+                }
+                toast(mod.display_name+' '+(enabling?'enabled':'disabled'),'success');
+            };
             label.appendChild(cb);
-            label.appendChild(el('span','tag '+(mod.enabled?'tag-green':'tag-orange'),mod.enabled?'ON':'OFF'));
+            label.appendChild(statusTag);
             row.appendChild(label);
             modBody.appendChild(row);
         });
@@ -1837,8 +1857,26 @@ async function showSetupWizard() {
 }
 
 // ── Init ──────────────────────────────────────────────────
+async function syncNavWithModules() {
+    const moduleNavMap = {
+        movies:'movies', tv:'tv', music:'music', books:'books', comics:'comics',
+        requests:'requests', indexers:'indexers',
+    };
+    const modules = await api('/modules');
+    if(modules){
+        Object.entries(modules).forEach(([name,mod])=>{
+            const navPage = moduleNavMap[name];
+            if(navPage){
+                const navLink = document.querySelector('.nav-link[data-page="'+navPage+'"]');
+                if(navLink) navLink.style.display = mod.enabled ? '' : 'none';
+            }
+        });
+    }
+}
+
 async function init() {
     initMobile();
+    await syncNavWithModules();
     const isFirstRun = await checkFirstRun();
     if(!isFirstRun) {
         initFromHash();
