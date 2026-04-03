@@ -1781,3 +1781,113 @@ async def setup_status(db: AsyncSession = Depends(get_db)):
         "media_root": str(settings.paths.media_root),
         "media_root_exists": settings.paths.media_root.exists(),
     }
+
+
+# ============================================================
+# DLNA/UPnP — device discovery + content directory
+# ============================================================
+
+from app.core.dlna import dlna_server
+from fastapi.responses import Response
+
+
+@api_router.get("/dlna/status")
+async def dlna_status():
+    """Get DLNA server status."""
+    return dlna_server.status
+
+
+@api_router.post("/dlna/start")
+async def dlna_start():
+    """Start the DLNA server."""
+    await dlna_server.start()
+    return {"started": True, **dlna_server.status}
+
+
+@api_router.post("/dlna/stop")
+async def dlna_stop():
+    """Stop the DLNA server."""
+    await dlna_server.stop()
+    return {"stopped": True}
+
+
+@api_router.get("/dlna/description.xml")
+async def dlna_description():
+    """UPnP device description XML."""
+    return Response(content=dlna_server.device_description(), media_type="text/xml")
+
+
+@api_router.get("/dlna/content-directory.xml")
+async def dlna_content_directory_scpd():
+    """ContentDirectory service description XML."""
+    return Response(content=dlna_server.content_directory_scpd(), media_type="text/xml")
+
+
+@api_router.get("/dlna/connection-manager.xml")
+async def dlna_connection_manager():
+    """ConnectionManager service description (minimal)."""
+    return Response(content="""<?xml version="1.0" encoding="UTF-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action><name>GetProtocolInfo</name>
+      <argumentList>
+        <argument><name>Source</name><direction>out</direction><relatedStateVariable>SourceProtocolInfo</relatedStateVariable></argument>
+        <argument><name>Sink</name><direction>out</direction><relatedStateVariable>SinkProtocolInfo</relatedStateVariable></argument>
+      </argumentList>
+    </action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="yes"><name>SourceProtocolInfo</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="yes"><name>SinkProtocolInfo</name><dataType>string</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>""", media_type="text/xml")
+
+
+@api_router.post("/dlna/control")
+async def dlna_control(request: Request):
+    """Handle UPnP SOAP Browse/GetSystemUpdateID actions."""
+    body = await request.body()
+    body_str = body.decode("utf-8", errors="replace")
+
+    if "Browse" in body_str:
+        # Parse ObjectID from SOAP
+        import re
+        obj_match = re.search(r"<ObjectID>([^<]*)</ObjectID>", body_str)
+        start_match = re.search(r"<StartingIndex>(\d+)</StartingIndex>", body_str)
+        count_match = re.search(r"<RequestedCount>(\d+)</RequestedCount>", body_str)
+
+        object_id = obj_match.group(1) if obj_match else "0"
+        start = int(start_match.group(1)) if start_match else 0
+        count = int(count_match.group(1)) if count_match else 50
+        if count == 0:
+            count = 50
+
+        didl, returned, total = dlna_server.browse(object_id, start, count)
+        didl_escaped = didl.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        soap = f"""<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <Result>{didl_escaped}</Result>
+      <NumberReturned>{returned}</NumberReturned>
+      <TotalMatches>{total}</TotalMatches>
+      <UpdateID>1</UpdateID>
+    </u:BrowseResponse>
+  </s:Body>
+</s:Envelope>"""
+        return Response(content=soap, media_type="text/xml")
+
+    elif "GetSystemUpdateID" in body_str:
+        soap = """<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetSystemUpdateIDResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <Id>1</Id>
+    </u:GetSystemUpdateIDResponse>
+  </s:Body>
+</s:Envelope>"""
+        return Response(content=soap, media_type="text/xml")
+
+    return Response(content="", status_code=400)
