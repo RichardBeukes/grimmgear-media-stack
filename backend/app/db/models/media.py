@@ -5,8 +5,9 @@ Movies, Series, Episodes, Artists, Albums, Tracks, Authors, Books, Comics.
 
 from typing import Optional
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Float, JSON
+from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Float, JSON, Text, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from datetime import datetime, timezone
 
 from .base import Base, MediaItemMixin
 
@@ -289,3 +290,134 @@ class NotificationAgent(Base):
     on_import: Mapped[bool] = mapped_column(Boolean, default=True)
     on_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
     on_health: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# ============================================================
+# Blocklist
+# ============================================================
+
+class BlocklistItem(Base):
+    """Blocked releases — never grab again."""
+    __tablename__ = "blocklist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(500))
+    indexer: Mapped[str] = mapped_column(String(200), default="")
+    media_type: Mapped[str] = mapped_column(String(20), default="movie")  # movie, tv, music, book
+    media_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str] = mapped_column(String(500), default="manual")
+    protocol: Mapped[str] = mapped_column(String(20), default="torrent")
+    size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+# ============================================================
+# Tags
+# ============================================================
+
+class Tag(Base):
+    """Tags for organizing media, indexers, download clients."""
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    color: Mapped[str] = mapped_column(String(20), default="#3b82f6")
+
+
+class TagAssignment(Base):
+    """Many-to-many: assign tags to any entity type."""
+    __tablename__ = "tag_assignments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id", ondelete="CASCADE"))
+    entity_type: Mapped[str] = mapped_column(String(50))  # movie, series, artist, author, indexer, download_client
+    entity_id: Mapped[int] = mapped_column(Integer)
+
+
+# ============================================================
+# Custom Formats
+# ============================================================
+
+class CustomFormat(Base):
+    """Regex-based custom formats for quality matching (like Radarr)."""
+    __tablename__ = "custom_formats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200))
+    include_when_renaming: Mapped[bool] = mapped_column(Boolean, default=False)
+    specifications: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)  # [{field, value, regex, negate, required}]
+    score: Mapped[int] = mapped_column(Integer, default=0)  # Score to add/subtract when matched
+
+
+# ============================================================
+# Import Lists
+# ============================================================
+
+class ImportList(Base):
+    """Auto-import from external sources: TMDB lists, Trakt, IMDB."""
+    __tablename__ = "import_lists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200))
+    list_type: Mapped[str] = mapped_column(String(50))  # tmdb_popular, tmdb_list, trakt_watchlist, trakt_list, imdb_watchlist
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    media_type: Mapped[str] = mapped_column(String(20), default="movie")  # movie, tv
+    config: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)  # type-specific config (list_id, api_key, etc)
+    quality_profile_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    root_folder_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    monitor: Mapped[bool] = mapped_column(Boolean, default=True)
+    search_on_add: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_interval: Mapped[int] = mapped_column(Integer, default=360)  # minutes
+    last_sync: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
+
+# ============================================================
+# Event Log
+# ============================================================
+
+class EventLog(Base):
+    """Structured event log like Sonarr Events."""
+    __tablename__ = "event_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    level: Mapped[str] = mapped_column(String(10), default="info")  # info, warn, error, debug
+    category: Mapped[str] = mapped_column(String(50), default="system")  # system, download, import, search, media, indexer, health
+    message: Mapped[str] = mapped_column(String(2000))
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    media_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    media_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+# ============================================================
+# Naming Configuration (per media type)
+# ============================================================
+
+class NamingConfig(Base):
+    """File naming patterns per media type, like Sonarr/Radarr naming settings."""
+    __tablename__ = "naming_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_type: Mapped[str] = mapped_column(String(20), unique=True)  # movie, tv, music, book
+    rename_files: Mapped[bool] = mapped_column(Boolean, default=True)
+    replace_illegal: Mapped[bool] = mapped_column(Boolean, default=True)
+    colon_replacement: Mapped[str] = mapped_column(String(10), default="dash")  # dash, delete, space
+    # Naming patterns
+    standard_format: Mapped[str] = mapped_column(String(500), default="")
+    folder_format: Mapped[str] = mapped_column(String(500), default="")
+    multi_episode_style: Mapped[str] = mapped_column(String(50), default="extend")  # extend, duplicate, prefixedrange, range
+
+
+# ============================================================
+# Backups
+# ============================================================
+
+class Backup(Base):
+    """DB backup history."""
+    __tablename__ = "backups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    filename: Mapped[str] = mapped_column(String(500))
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    backup_type: Mapped[str] = mapped_column(String(20), default="manual")  # manual, scheduled
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

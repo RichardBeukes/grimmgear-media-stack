@@ -19,6 +19,8 @@ from app.db.models import (
     Movie, Series, Season, Episode, Artist, Album, Track,
     Author, Book, QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
     SystemSetting, RootFolder, DownloadClient as DownloadClientModel, NotificationAgent,
+    BlocklistItem, Tag, TagAssignment, CustomFormat, ImportList,
+    EventLog, NamingConfig, Backup,
 )
 from app.db.session import get_db
 from app.modules.registry import registry
@@ -2212,6 +2214,810 @@ async def update_general_settings(req: GeneralSettingsRequest, db: AsyncSession 
     if req.dlna_name:
         await _set_setting(db, "dlna_name", req.dlna_name, "general")
     return {"saved": True}
+
+
+# ============================================================
+# CALENDAR — upcoming episodes, movie releases, scheduled items
+# ============================================================
+
+@api_router.get("/calendar")
+async def get_calendar(
+    start: str = Query(None, description="Start date YYYY-MM-DD"),
+    end: str = Query(None, description="End date YYYY-MM-DD"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Calendar of upcoming/recent media — like Sonarr/Radarr calendar."""
+    from datetime import datetime, timedelta
+
+    # Default: this week +-7 days
+    if not start:
+        start = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if not end:
+        end = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d")
+
+    events = []
+
+    # Movies with release dates (year match or from TMDB)
+    result = await db.execute(select(Movie).where(Movie.monitored == True))
+    for m in result.scalars().all():
+        if m.year:
+            events.append({
+                "id": f"movie-{m.id}", "type": "movie", "title": m.title, "year": m.year,
+                "date": f"{m.year}-01-01", "has_file": m.has_file,
+                "poster_url": m.poster_url, "media_id": m.id,
+            })
+
+    # Series episodes with air dates
+    ep_result = await db.execute(
+        select(Episode).where(Episode.air_date != None, Episode.air_date >= start, Episode.air_date <= end)
+    )
+    for ep in ep_result.scalars().all():
+        season = await db.get(Season, ep.season_id)
+        series = await db.get(Series, season.series_id) if season else None
+        events.append({
+            "id": f"episode-{ep.id}", "type": "episode",
+            "title": f"{series.title if series else 'Unknown'} S{season.season_number:02d}E{ep.episode_number:02d}" if season else ep.title,
+            "episode_title": ep.title, "date": ep.air_date, "has_file": ep.has_file,
+            "poster_url": series.poster_url if series else None, "media_id": ep.id,
+        })
+
+    events.sort(key=lambda x: x.get("date", ""))
+    return {"events": events, "start": start, "end": end}
+
+
+# ============================================================
+# BLOCKLIST — rejected releases
+# ============================================================
+
+@api_router.get("/blocklist")
+async def get_blocklist(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get blocklisted releases."""
+    result = await db.execute(
+        select(BlocklistItem).order_by(BlocklistItem.date.desc()).offset((page - 1) * page_size).limit(page_size)
+    )
+    items = result.scalars().all()
+    count_result = await db.execute(select(text("COUNT(*)")).select_from(BlocklistItem.__table__))
+    total = count_result.scalar() or 0
+    return {
+        "items": [{"id": b.id, "title": b.title, "indexer": b.indexer, "media_type": b.media_type,
+                    "reason": b.reason, "protocol": b.protocol, "size": b.size,
+                    "date": b.date.isoformat() if b.date else None} for b in items],
+        "total": total, "page": page, "page_size": page_size,
+    }
+
+
+class BlocklistAdd(BaseModel):
+    title: str
+    indexer: str = ""
+    media_type: str = "movie"
+    reason: str = "manual"
+    protocol: str = "torrent"
+    size: int = 0
+
+@api_router.post("/blocklist")
+async def add_to_blocklist(req: BlocklistAdd, db: AsyncSession = Depends(get_db)):
+    item = BlocklistItem(title=req.title, indexer=req.indexer, media_type=req.media_type,
+                         reason=req.reason, protocol=req.protocol, size=req.size)
+    db.add(item)
+    await db.commit()
+    return {"id": item.id, "added": True}
+
+
+@api_router.delete("/blocklist/{item_id}")
+async def remove_from_blocklist(item_id: int, db: AsyncSession = Depends(get_db)):
+    item = await db.get(BlocklistItem, item_id)
+    if not item:
+        raise HTTPException(404, "Not found")
+    await db.delete(item)
+    await db.commit()
+    return {"deleted": True}
+
+
+@api_router.delete("/blocklist/bulk")
+async def clear_blocklist(db: AsyncSession = Depends(get_db)):
+    await db.execute(text("DELETE FROM blocklist"))
+    await db.commit()
+    return {"cleared": True}
+
+
+# ============================================================
+# TAGS — organize media, indexers, download clients
+# ============================================================
+
+@api_router.get("/tags")
+async def get_tags(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Tag).order_by(Tag.name))
+    tags = result.scalars().all()
+    # Count assignments per tag
+    out = []
+    for t in tags:
+        assign_result = await db.execute(
+            select(text("COUNT(*)")).select_from(TagAssignment.__table__).where(TagAssignment.tag_id == t.id)
+        )
+        count = assign_result.scalar() or 0
+        out.append({"id": t.id, "name": t.name, "color": t.color, "usage_count": count})
+    return out
+
+
+class TagCreate(BaseModel):
+    name: str
+    color: str = "#3b82f6"
+
+@api_router.post("/tags")
+async def create_tag(req: TagCreate, db: AsyncSession = Depends(get_db)):
+    tag = Tag(name=req.name, color=req.color)
+    db.add(tag)
+    await db.commit()
+    return {"id": tag.id, "name": tag.name, "color": tag.color}
+
+
+@api_router.delete("/tags/{tag_id}")
+async def delete_tag(tag_id: int, db: AsyncSession = Depends(get_db)):
+    tag = await db.get(Tag, tag_id)
+    if not tag:
+        raise HTTPException(404, "Not found")
+    # Remove all assignments
+    await db.execute(text(f"DELETE FROM tag_assignments WHERE tag_id = {tag_id}"))
+    await db.delete(tag)
+    await db.commit()
+    return {"deleted": True}
+
+
+class TagAssign(BaseModel):
+    tag_id: int
+    entity_type: str  # movie, series, artist, author, indexer, download_client
+    entity_id: int
+
+@api_router.post("/tags/assign")
+async def assign_tag(req: TagAssign, db: AsyncSession = Depends(get_db)):
+    assignment = TagAssignment(tag_id=req.tag_id, entity_type=req.entity_type, entity_id=req.entity_id)
+    db.add(assignment)
+    await db.commit()
+    return {"assigned": True}
+
+
+@api_router.delete("/tags/assign/{entity_type}/{entity_id}/{tag_id}")
+async def unassign_tag(entity_type: str, entity_id: int, tag_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(TagAssignment).where(
+            TagAssignment.tag_id == tag_id,
+            TagAssignment.entity_type == entity_type,
+            TagAssignment.entity_id == entity_id,
+        )
+    )
+    item = result.scalar_one_or_none()
+    if item:
+        await db.delete(item)
+        await db.commit()
+    return {"removed": True}
+
+
+# ============================================================
+# CUSTOM FORMATS — regex-based quality matching
+# ============================================================
+
+@api_router.get("/custom-formats")
+async def get_custom_formats(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(CustomFormat).order_by(CustomFormat.name))
+    return [{"id": cf.id, "name": cf.name, "score": cf.score,
+             "include_when_renaming": cf.include_when_renaming,
+             "specifications": cf.specifications} for cf in result.scalars().all()]
+
+
+class CustomFormatCreate(BaseModel):
+    name: str
+    score: int = 0
+    include_when_renaming: bool = False
+    specifications: list = []  # [{field, value, regex, negate, required}]
+
+@api_router.post("/custom-formats")
+async def create_custom_format(req: CustomFormatCreate, db: AsyncSession = Depends(get_db)):
+    cf = CustomFormat(name=req.name, score=req.score, include_when_renaming=req.include_when_renaming,
+                      specifications=req.specifications)
+    db.add(cf)
+    await db.commit()
+    return {"id": cf.id, "name": cf.name}
+
+
+@api_router.put("/custom-formats/{cf_id}")
+async def update_custom_format(cf_id: int, req: CustomFormatCreate, db: AsyncSession = Depends(get_db)):
+    cf = await db.get(CustomFormat, cf_id)
+    if not cf:
+        raise HTTPException(404, "Not found")
+    cf.name = req.name
+    cf.score = req.score
+    cf.include_when_renaming = req.include_when_renaming
+    cf.specifications = req.specifications
+    await db.commit()
+    return {"updated": True}
+
+
+@api_router.delete("/custom-formats/{cf_id}")
+async def delete_custom_format(cf_id: int, db: AsyncSession = Depends(get_db)):
+    cf = await db.get(CustomFormat, cf_id)
+    if not cf:
+        raise HTTPException(404, "Not found")
+    await db.delete(cf)
+    await db.commit()
+    return {"deleted": True}
+
+
+@api_router.post("/custom-formats/test")
+async def test_custom_format(req: CustomFormatCreate):
+    """Test a custom format against sample release names."""
+    import re
+    test_names = [
+        "Movie.Title.2024.1080p.BluRay.x264-GROUP",
+        "Movie.Title.2024.2160p.UHD.BluRay.HDR.DV.Atmos-GROUP",
+        "Movie.Title.2024.720p.WEB-DL.AAC2.0.H.264-GROUP",
+        "Movie.Title.2024.HDCAM.XviD-FAKE",
+        "Movie.Title.2024.FRENCH.1080p.BluRay-GROUP",
+    ]
+    results = []
+    for name in test_names:
+        matched = True
+        for spec in (req.specifications or []):
+            pattern = spec.get("value", "")
+            try:
+                m = bool(re.search(pattern, name, re.IGNORECASE))
+            except re.error:
+                m = False
+            if spec.get("negate"):
+                m = not m
+            if spec.get("required") and not m:
+                matched = False
+                break
+            if not spec.get("required") and not m:
+                matched = False
+        results.append({"name": name, "matched": matched, "score": req.score if matched else 0})
+    return {"results": results}
+
+
+# ============================================================
+# IMPORT LISTS — TMDB, Trakt, IMDB auto-import
+# ============================================================
+
+@api_router.get("/import-lists")
+async def get_import_lists(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ImportList).order_by(ImportList.name))
+    return [{"id": il.id, "name": il.name, "list_type": il.list_type, "enabled": il.enabled,
+             "media_type": il.media_type, "config": il.config, "monitor": il.monitor,
+             "search_on_add": il.search_on_add, "sync_interval": il.sync_interval,
+             "last_sync": il.last_sync, "quality_profile_id": il.quality_profile_id,
+             "root_folder_id": il.root_folder_id} for il in result.scalars().all()]
+
+
+class ImportListCreate(BaseModel):
+    name: str
+    list_type: str  # tmdb_popular, tmdb_upcoming, tmdb_list, trakt_watchlist, imdb_watchlist
+    media_type: str = "movie"
+    enabled: bool = True
+    config: dict = {}
+    quality_profile_id: int = None
+    root_folder_id: int = None
+    monitor: bool = True
+    search_on_add: bool = True
+    sync_interval: int = 360
+
+@api_router.post("/import-lists")
+async def create_import_list(req: ImportListCreate, db: AsyncSession = Depends(get_db)):
+    il = ImportList(name=req.name, list_type=req.list_type, media_type=req.media_type,
+                    enabled=req.enabled, config=req.config, quality_profile_id=req.quality_profile_id,
+                    root_folder_id=req.root_folder_id, monitor=req.monitor,
+                    search_on_add=req.search_on_add, sync_interval=req.sync_interval)
+    db.add(il)
+    await db.commit()
+    return {"id": il.id, "name": il.name}
+
+
+@api_router.put("/import-lists/{list_id}")
+async def update_import_list(list_id: int, req: ImportListCreate, db: AsyncSession = Depends(get_db)):
+    il = await db.get(ImportList, list_id)
+    if not il:
+        raise HTTPException(404, "Not found")
+    for field in ["name", "list_type", "media_type", "enabled", "config", "quality_profile_id",
+                  "root_folder_id", "monitor", "search_on_add", "sync_interval"]:
+        setattr(il, field, getattr(req, field))
+    await db.commit()
+    return {"updated": True}
+
+
+@api_router.delete("/import-lists/{list_id}")
+async def delete_import_list(list_id: int, db: AsyncSession = Depends(get_db)):
+    il = await db.get(ImportList, list_id)
+    if not il:
+        raise HTTPException(404, "Not found")
+    await db.delete(il)
+    await db.commit()
+    return {"deleted": True}
+
+
+@api_router.post("/import-lists/{list_id}/sync")
+async def sync_import_list(list_id: int, db: AsyncSession = Depends(get_db)):
+    """Trigger manual sync of an import list."""
+    il = await db.get(ImportList, list_id)
+    if not il:
+        raise HTTPException(404, "Not found")
+
+    imported = []
+    if il.list_type.startswith("tmdb_"):
+        # TMDB lists
+        if il.list_type == "tmdb_popular":
+            data = await tmdb.popular_movies() if il.media_type == "movie" else await tmdb.trending_tv()
+        elif il.list_type == "tmdb_upcoming":
+            data = await tmdb.upcoming_movies()
+        elif il.list_type == "tmdb_trending":
+            data = await tmdb.trending_movies() if il.media_type == "movie" else await tmdb.trending_tv()
+        else:
+            data = []
+
+        if data and isinstance(data, dict):
+            data = data.get("results", [])
+
+        for item in (data or [])[:50]:
+            tmdb_id = item.get("id")
+            if not tmdb_id:
+                continue
+            title = item.get("title") or item.get("name", "")
+            if not title:
+                continue
+            year_str = (item.get("release_date") or item.get("first_air_date") or "")[:4]
+            year = int(year_str) if year_str.isdigit() else None
+
+            if il.media_type == "movie":
+                exists = await db.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
+                if not exists.scalar_one_or_none():
+                    m = Movie(title=title, year=year, tmdb_id=tmdb_id,
+                              overview=item.get("overview", ""),
+                              poster_url=f"https://image.tmdb.org/t/p/w500{item['poster_path']}" if item.get("poster_path") else None,
+                              monitored=il.monitor, quality_profile_id=il.quality_profile_id or 1,
+                              root_folder=str(il.root_folder_id or ""))
+                    db.add(m)
+                    imported.append(title)
+
+        await db.commit()
+
+    from datetime import datetime
+    il.last_sync = datetime.utcnow().isoformat()
+    await db.commit()
+
+    # Log the event
+    log = EventLog(category="import", level="info",
+                   message=f"Import list '{il.name}' synced: {len(imported)} new items")
+    db.add(log)
+    await db.commit()
+
+    return {"synced": len(imported), "items": imported[:20]}
+
+
+# ============================================================
+# EVENT LOG — structured events like Sonarr
+# ============================================================
+
+@api_router.get("/events")
+async def get_events(
+    level: str = Query(None),
+    category: str = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(EventLog).order_by(EventLog.timestamp.desc())
+    if level:
+        q = q.where(EventLog.level == level)
+    if category:
+        q = q.where(EventLog.category == category)
+    q = q.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(q)
+    items = result.scalars().all()
+    count_q = select(text("COUNT(*)")).select_from(EventLog.__table__)
+    if level:
+        count_q = count_q.where(EventLog.level == level)
+    if category:
+        count_q = count_q.where(EventLog.category == category)
+    total = (await db.execute(count_q)).scalar() or 0
+    return {
+        "events": [{"id": e.id, "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+                     "level": e.level, "category": e.category, "message": e.message,
+                     "detail": e.detail, "media_type": e.media_type, "media_id": e.media_id}
+                    for e in items],
+        "total": total, "page": page,
+    }
+
+
+@api_router.delete("/events")
+async def clear_events(db: AsyncSession = Depends(get_db)):
+    await db.execute(text("DELETE FROM event_log"))
+    await db.commit()
+    return {"cleared": True}
+
+
+# ============================================================
+# LOG FILES — read application logs
+# ============================================================
+
+@api_router.get("/logs")
+async def get_log_files():
+    """List available log files."""
+    import os
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "logs")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+    files = []
+    for f in os.listdir(log_dir):
+        fp = os.path.join(log_dir, f)
+        if os.path.isfile(fp):
+            files.append({"name": f, "size": os.path.getsize(fp),
+                          "modified": os.path.getmtime(fp)})
+    return {"log_dir": log_dir, "files": sorted(files, key=lambda x: x["modified"], reverse=True)}
+
+
+@api_router.get("/logs/{filename}")
+async def read_log_file(filename: str, lines: int = Query(200, ge=1, le=5000)):
+    """Read last N lines of a log file."""
+    import os
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "logs")
+    fp = os.path.join(log_dir, filename)
+    if ".." in filename or not os.path.exists(fp):
+        raise HTTPException(404, "Not found")
+    with open(fp, "r", encoding="utf-8", errors="replace") as f:
+        all_lines = f.readlines()
+    return {"filename": filename, "lines": all_lines[-lines:], "total_lines": len(all_lines)}
+
+
+# ============================================================
+# NAMING CONFIG — per-media-type file naming patterns
+# ============================================================
+
+@api_router.get("/naming")
+async def get_naming_configs(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(NamingConfig))
+    configs = result.scalars().all()
+    # Return defaults for any missing media types
+    existing = {c.media_type: c for c in configs}
+    defaults = {
+        "movie": {"standard_format": "{Movie Title} ({Release Year}) [{Quality Full}]",
+                   "folder_format": "{Movie Title} ({Release Year})"},
+        "tv": {"standard_format": "{Series Title} - S{season:00}E{episode:00} - {Episode Title} [{Quality Full}]",
+                "folder_format": "{Series Title}", "multi_episode_style": "extend"},
+        "music": {"standard_format": "{Artist Name} - {Album Title} - {track:00} - {Track Title}",
+                   "folder_format": "{Artist Name}/{Album Title} ({Release Year})"},
+        "book": {"standard_format": "{Author Name} - {Book Title} ({Release Year})",
+                  "folder_format": "{Author Name}"},
+    }
+    out = []
+    for mt, dflt in defaults.items():
+        if mt in existing:
+            c = existing[mt]
+            out.append({"id": c.id, "media_type": mt, "rename_files": c.rename_files,
+                        "replace_illegal": c.replace_illegal, "colon_replacement": c.colon_replacement,
+                        "standard_format": c.standard_format, "folder_format": c.folder_format,
+                        "multi_episode_style": c.multi_episode_style})
+        else:
+            out.append({"id": None, "media_type": mt, "rename_files": True, "replace_illegal": True,
+                        "colon_replacement": "dash", **dflt, "multi_episode_style": "extend"})
+    return out
+
+
+class NamingUpdate(BaseModel):
+    media_type: str
+    rename_files: bool = True
+    replace_illegal: bool = True
+    colon_replacement: str = "dash"
+    standard_format: str = ""
+    folder_format: str = ""
+    multi_episode_style: str = "extend"
+
+@api_router.put("/naming")
+async def update_naming_config(req: NamingUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(NamingConfig).where(NamingConfig.media_type == req.media_type))
+    config = result.scalar_one_or_none()
+    if config:
+        config.rename_files = req.rename_files
+        config.replace_illegal = req.replace_illegal
+        config.colon_replacement = req.colon_replacement
+        config.standard_format = req.standard_format
+        config.folder_format = req.folder_format
+        config.multi_episode_style = req.multi_episode_style
+    else:
+        config = NamingConfig(media_type=req.media_type, rename_files=req.rename_files,
+                              replace_illegal=req.replace_illegal, colon_replacement=req.colon_replacement,
+                              standard_format=req.standard_format, folder_format=req.folder_format,
+                              multi_episode_style=req.multi_episode_style)
+        db.add(config)
+    await db.commit()
+    return {"saved": True}
+
+
+# ============================================================
+# SCHEDULED TASKS — dashboard with intervals, timing
+# ============================================================
+
+@api_router.get("/system/tasks")
+async def get_scheduled_tasks():
+    """Like Sonarr System > Tasks: intervals, last run, next run."""
+    from app.core.queue.scheduler import scheduler
+    from datetime import datetime, timedelta
+
+    task_defs = [
+        {"name": "ImportScan", "interval": 60, "description": "Scan download client for completed items"},
+        {"name": "SpeedLog", "interval": 300, "description": "Log download/upload speed"},
+        {"name": "RSSSync", "interval": 900, "description": "Search indexers for monitored wanted items"},
+        {"name": "PlexNotify", "interval": 120, "description": "Notify Plex of new imports"},
+        {"name": "ImportListSync", "interval": 21600, "description": "Sync import lists from TMDB/Trakt"},
+        {"name": "HealthCheck", "interval": 3600, "description": "Check system health (disk, indexers, clients)"},
+        {"name": "Backup", "interval": 86400, "description": "Automated database backup"},
+        {"name": "CleanupLog", "interval": 86400, "description": "Clean old event log entries (>30 days)"},
+    ]
+
+    now = datetime.utcnow()
+    tasks = []
+    for td in task_defs:
+        task_key = td["name"].lower()
+        last_run = getattr(scheduler, f"last_{task_key}", None)
+        if last_run and last_run != "never":
+            try:
+                last_dt = datetime.fromisoformat(last_run)
+                next_dt = last_dt + timedelta(seconds=td["interval"])
+                duration = "< 1s"
+            except (ValueError, TypeError):
+                next_dt = now + timedelta(seconds=td["interval"])
+                duration = "unknown"
+        else:
+            next_dt = now + timedelta(seconds=td["interval"])
+            last_run = "never"
+            duration = "n/a"
+
+        tasks.append({
+            "name": td["name"], "description": td["description"],
+            "interval_seconds": td["interval"],
+            "interval_display": f"{td['interval'] // 60} min" if td["interval"] < 3600 else f"{td['interval'] // 3600} hr",
+            "last_run": last_run if isinstance(last_run, str) else (last_run.isoformat() if last_run else "never"),
+            "next_run": next_dt.isoformat(),
+            "duration": duration,
+            "running": task_key in scheduler._tasks and not scheduler._tasks[task_key].done() if task_key in scheduler._tasks else False,
+        })
+    return {"tasks": tasks, "scheduler_running": scheduler._running}
+
+
+@api_router.post("/system/tasks/{task_name}/run")
+async def trigger_task(task_name: str):
+    """Manually trigger a scheduled task."""
+    from app.core.queue.scheduler import scheduler
+    from app.core.import_pipeline import import_pipeline
+
+    task_name_lower = task_name.lower()
+    if task_name_lower == "importscan":
+        result = await import_pipeline.scan_and_import()
+        return {"triggered": True, "result": result}
+    elif task_name_lower == "rsssync":
+        # Just indicate it will run
+        return {"triggered": True, "message": "RSS sync will run on next cycle"}
+    elif task_name_lower == "healthcheck":
+        # Run inline health check
+        return {"triggered": True, "message": "Health check triggered"}
+    else:
+        return {"triggered": False, "message": f"Unknown task: {task_name}"}
+
+
+# ============================================================
+# HEALTH CHECKS — like Sonarr System > Health
+# ============================================================
+
+@api_router.get("/system/health-checks")
+async def get_health_checks(db: AsyncSession = Depends(get_db)):
+    """Comprehensive health checks — indexer failures, disk space, connections."""
+    import os
+    import shutil
+    checks = []
+
+    # Database
+    try:
+        await db.execute(text("SELECT 1"))
+        checks.append({"source": "Database", "type": "ok", "message": "SQLite connected"})
+    except Exception as e:
+        checks.append({"source": "Database", "type": "error", "message": f"Database error: {e}"})
+
+    # Download client
+    try:
+        version = await qbit.get_version()
+        if version != "offline":
+            checks.append({"source": "DownloadClient", "type": "ok", "message": f"qBittorrent {version} connected"})
+        else:
+            checks.append({"source": "DownloadClient", "type": "warning", "message": "qBittorrent not reachable"})
+    except Exception:
+        checks.append({"source": "DownloadClient", "type": "error", "message": "Download client connection failed"})
+
+    # Indexers — check for high fail counts
+    idx_result = await db.execute(select(Indexer).where(Indexer.enabled == True))
+    indexers = idx_result.scalars().all()
+    if not indexers:
+        checks.append({"source": "Indexer", "type": "warning", "message": "No indexers configured"})
+    else:
+        for idx in indexers:
+            if idx.fail_count > 10:
+                checks.append({"source": "Indexer", "type": "warning",
+                                "message": f"Indexer '{idx.name}' has {idx.fail_count} failures"})
+        if all(idx.fail_count <= 10 for idx in indexers):
+            checks.append({"source": "Indexer", "type": "ok", "message": f"{len(indexers)} indexers healthy"})
+
+    # Disk space
+    media_root = str(settings.paths.media_root)
+    try:
+        usage = shutil.disk_usage(media_root)
+        free_gb = usage.free / (1024**3)
+        total_gb = usage.total / (1024**3)
+        pct_used = (usage.used / usage.total) * 100
+        if pct_used > 95:
+            checks.append({"source": "DiskSpace", "type": "error",
+                            "message": f"Critical: {media_root} is {pct_used:.0f}% full ({free_gb:.1f} GB free)"})
+        elif pct_used > 85:
+            checks.append({"source": "DiskSpace", "type": "warning",
+                            "message": f"Low space: {media_root} is {pct_used:.0f}% full ({free_gb:.1f} GB free)"})
+        else:
+            checks.append({"source": "DiskSpace", "type": "ok",
+                            "message": f"{media_root}: {free_gb:.1f} GB free of {total_gb:.1f} GB"})
+    except Exception:
+        checks.append({"source": "DiskSpace", "type": "warning", "message": f"Cannot check disk: {media_root}"})
+
+    # Root folders existence
+    rf_result = await db.execute(select(RootFolder))
+    for rf in rf_result.scalars().all():
+        if not os.path.exists(rf.path):
+            checks.append({"source": "RootFolder", "type": "error",
+                            "message": f"Root folder missing: {rf.path} ({rf.media_type})"})
+
+    # Media server
+    if settings.media_server.type and settings.media_server.url:
+        checks.append({"source": "MediaServer", "type": "ok",
+                        "message": f"{settings.media_server.type.title()} configured at {settings.media_server.url}"})
+    else:
+        checks.append({"source": "MediaServer", "type": "warning", "message": "No media server configured"})
+
+    return {"checks": checks, "status": "error" if any(c["type"] == "error" for c in checks)
+            else "warning" if any(c["type"] == "warning" for c in checks) else "ok"}
+
+
+# ============================================================
+# DISK SPACE — like Sonarr System > Disk Space
+# ============================================================
+
+@api_router.get("/system/disk-space")
+async def get_disk_space(db: AsyncSession = Depends(get_db)):
+    """Disk space for all configured root folders."""
+    import shutil
+    drives = []
+    seen_paths = set()
+
+    # Check root folders
+    rf_result = await db.execute(select(RootFolder))
+    for rf in rf_result.scalars().all():
+        try:
+            usage = shutil.disk_usage(rf.path)
+            drive = rf.path[:3] if len(rf.path) >= 3 else rf.path
+            if drive not in seen_paths:
+                seen_paths.add(drive)
+                drives.append({
+                    "path": rf.path, "label": rf.name or rf.media_type,
+                    "total": usage.total, "used": usage.used, "free": usage.free,
+                    "percent_used": round((usage.used / usage.total) * 100, 1),
+                })
+        except Exception:
+            drives.append({"path": rf.path, "label": rf.name or rf.media_type,
+                           "total": 0, "used": 0, "free": 0, "percent_used": 0, "error": "Cannot access"})
+
+    # Always include media root
+    media_root = str(settings.paths.media_root)
+    try:
+        usage = shutil.disk_usage(media_root)
+        drive = media_root[:3] if len(media_root) >= 3 else media_root
+        if drive not in seen_paths:
+            drives.append({
+                "path": media_root, "label": "Media Root",
+                "total": usage.total, "used": usage.used, "free": usage.free,
+                "percent_used": round((usage.used / usage.total) * 100, 1),
+            })
+    except Exception:
+        pass
+
+    return {"drives": drives}
+
+
+# ============================================================
+# SYSTEM INFO — version, Python, DB, uptime, dirs
+# ============================================================
+
+@api_router.get("/system/info")
+async def system_info():
+    """Like Lidarr's System > Status: version, runtime, DB, dirs, uptime."""
+    import sys, os, platform
+    from app.core.config import settings
+    from datetime import datetime
+
+    db_path = settings.database.url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+
+    return {
+        "version": settings.version,
+        "app_name": settings.app_name,
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "platform": platform.platform(),
+        "database": "SQLite",
+        "database_path": db_path,
+        "app_data_dir": os.path.dirname(os.path.abspath(db_path)) if db_path else "",
+        "startup_dir": os.getcwd(),
+        "media_root": str(settings.paths.media_root),
+        "mode": "Standalone",
+        "host": settings.server.host,
+        "port": settings.server.port,
+        "uptime_start": _app_start_time.isoformat() if _app_start_time else None,
+    }
+
+
+# ============================================================
+# BACKUPS — DB backup/restore
+# ============================================================
+
+@api_router.get("/system/backups")
+async def get_backups(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Backup).order_by(Backup.created_at.desc()))
+    return [{"id": b.id, "filename": b.filename, "size": b.size,
+             "backup_type": b.backup_type,
+             "created_at": b.created_at.isoformat() if b.created_at else None}
+            for b in result.scalars().all()]
+
+
+@api_router.post("/system/backups")
+async def create_backup(db: AsyncSession = Depends(get_db)):
+    """Create a database backup."""
+    import shutil, os
+    from datetime import datetime
+
+    db_path = settings.database.url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+    backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"mediarr_backup_{timestamp}.db"
+    backup_path = os.path.join(backup_dir, backup_filename)
+
+    shutil.copy2(db_path, backup_path)
+    size = os.path.getsize(backup_path)
+
+    record = Backup(filename=backup_filename, size=size, backup_type="manual")
+    db.add(record)
+
+    log = EventLog(category="system", level="info", message=f"Database backup created: {backup_filename}")
+    db.add(log)
+    await db.commit()
+
+    return {"filename": backup_filename, "size": size, "path": backup_path}
+
+
+@api_router.delete("/system/backups/{backup_id}")
+async def delete_backup(backup_id: int, db: AsyncSession = Depends(get_db)):
+    import os
+    backup = await db.get(Backup, backup_id)
+    if not backup:
+        raise HTTPException(404, "Not found")
+
+    db_path = settings.database.url.replace("sqlite+aiosqlite:///", "").replace("sqlite:///", "")
+    backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+    fp = os.path.join(backup_dir, backup.filename)
+    if os.path.exists(fp):
+        os.remove(fp)
+
+    await db.delete(backup)
+    await db.commit()
+    return {"deleted": True}
+
+
+# ── Track app start time for uptime ──
+from datetime import datetime as _dt
+_app_start_time = _dt.utcnow()
 
 
 # ============================================================

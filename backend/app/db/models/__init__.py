@@ -5,6 +5,8 @@ from .media import (
     Author, Book,
     QualityProfile, Indexer, DownloadQueueItem, User, MediaRequest,
     SystemSetting, RootFolder, DownloadClient, NotificationAgent,
+    BlocklistItem, Tag, TagAssignment, CustomFormat, ImportList,
+    EventLog, NamingConfig, Backup,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "Author", "Book",
     "QualityProfile", "Indexer", "DownloadQueueItem", "User", "MediaRequest",
     "SystemSetting", "RootFolder", "DownloadClient", "NotificationAgent",
+    "BlocklistItem", "Tag", "TagAssignment", "CustomFormat", "ImportList",
+    "EventLog", "NamingConfig", "Backup",
 ]

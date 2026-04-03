@@ -15,6 +15,9 @@ async function apiPost(path, data) {
 async function apiDelete(path) {
     try { const r = await fetch(API + path, {method:'DELETE',signal: AbortSignal.timeout(10000)}); return r.ok ? await r.json() : null; } catch { return null; }
 }
+async function apiPut(path, data) {
+    try { const r = await fetch(API + path, {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(15000)}); return r.ok ? await r.json() : null; } catch { return null; }
+}
 function fmtBytes(b) { if(!b)return '0 B'; const u=['B','KB','MB','GB','TB']; const i=Math.floor(Math.log(b)/Math.log(1024)); return (b/Math.pow(1024,i)).toFixed(1)+' '+u[i]; }
 function fmtSpeed(b) { return (b/1048576).toFixed(1)+' MB/s'; }
 function fmtEta(s) { if(!s||s<=0||s>8640000) return ''; const h=Math.floor(s/3600); const m=Math.floor((s%3600)/60); return h>0?h+'h '+m+'m':m+'m'; }
@@ -39,7 +42,7 @@ function navigate(page) {
     const overlay = document.querySelector('.mobile-overlay');
     if (overlay) overlay.classList.remove('active');
     // Route
-    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,library:renderLibrary,requests:renderRequests,indexers:renderIndexers,settings:renderSettings};
+    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,library:renderLibrary,calendar:renderCalendar,requests:renderRequests,indexers:renderIndexers,blocklist:renderBlocklist,system:renderSystem,settings:renderSettings};
     (routes[page]||renderDashboard)();
     window.location.hash = page;
 }
