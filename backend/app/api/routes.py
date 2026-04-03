@@ -2049,7 +2049,13 @@ async def add_root_folder(req: AddRootFolderRequest, db: AsyncSession = Depends(
             p.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             raise HTTPException(400, f"Cannot create folder: {e}")
-    rf = RootFolder(path=req.path, media_type=req.media_type, name=req.name or p.name)
+    norm_path = str(p).replace("\\", "/")
+    # Check for duplicate
+    existing = await db.execute(select(RootFolder).where(RootFolder.media_type == req.media_type))
+    for ex in existing.scalars().all():
+        if ex.path.replace("\\", "/").lower() == norm_path.lower():
+            return {"id": ex.id, "added": False, "message": "Already exists"}
+    rf = RootFolder(path=norm_path, media_type=req.media_type, name=req.name or p.name)
     db.add(rf)
     await db.flush()
     return {"id": rf.id, "added": True, "path": rf.path}

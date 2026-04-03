@@ -832,7 +832,10 @@ function showAddIndexerManual(){
 }
 
 // ── Settings ──────────────────────────────────────────────
+let _settingsRendering = false;
 async function renderSettings() {
+    if (_settingsRendering) return;
+    _settingsRendering = true;
     content.textContent='';
     content.appendChild(el('div','page-title','Settings'));
 
@@ -1106,6 +1109,7 @@ async function renderSettings() {
     container.appendChild(s6);
 
     content.appendChild(container);
+    _settingsRendering = false;
 }
 
 // ── Settings: Add Root Folder Form ────────────────────────
