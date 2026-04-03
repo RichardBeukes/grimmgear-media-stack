@@ -7,22 +7,25 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div class="hamburger" onclick="document.getElementById('sidebar').classList.toggle('open');document.querySelector('.mobile-overlay').classList.toggle('active')">&#9776;</div>
+<div class="mobile-overlay" onclick="document.getElementById('sidebar').classList.remove('open');this.classList.remove('active')"></div>
 <div id="app">
     <nav id="sidebar">
-        <div class="brand" onclick="navigate('dashboard')" style="cursor:pointer">
+        <div class="brand" onclick="navigate('dashboard')">
             <div class="brand-icon">G</div><span>Mediarr</span>
         </div>
         <div class="nav-links">
-            <a class="nav-link active" data-page="dashboard" href="#dashboard" onclick="navigate('dashboard')">Dashboard</a>
-            <a class="nav-link" data-page="movies" href="#movies" onclick="navigate('movies')">Movies</a>
-            <a class="nav-link" data-page="tv" href="#tv" onclick="navigate('tv')">TV Shows</a>
-            <a class="nav-link" data-page="search" href="#search" onclick="navigate('search')">Search</a>
-            <a class="nav-link" data-page="downloads" href="#downloads" onclick="navigate('downloads')">Downloads</a>
-            <a class="nav-link" data-page="indexers" href="#indexers" onclick="navigate('indexers')">Indexers</a>
-            <a class="nav-link" data-page="settings" href="#settings" onclick="navigate('settings')">Settings</a>
+            <a class="nav-link active" data-page="dashboard" href="#dashboard" onclick="navigate('dashboard')"><span class="nav-icon">&#9632;</span> Dashboard</a>
+            <a class="nav-link" data-page="movies" href="#movies" onclick="navigate('movies')"><span class="nav-icon">&#127916;</span> Movies</a>
+            <a class="nav-link" data-page="tv" href="#tv" onclick="navigate('tv')"><span class="nav-icon">&#128250;</span> TV Shows</a>
+            <a class="nav-link" data-page="search" href="#search" onclick="navigate('search')"><span class="nav-icon">&#128269;</span> Search</a>
+            <a class="nav-link" data-page="downloads" href="#downloads" onclick="navigate('downloads')"><span class="nav-icon">&#11015;</span> Downloads</a>
+            <a class="nav-link" data-page="indexers" href="#indexers" onclick="navigate('indexers')"><span class="nav-icon">&#128279;</span> Indexers</a>
+            <a class="nav-link" data-page="settings" href="#settings" onclick="navigate('settings')"><span class="nav-icon">&#9881;</span> Settings</a>
         </div>
         <div class="nav-footer">
-            <div id="dl-speed-mini">0 MB/s</div>
+            <span class="speed-dot"></span>
+            <span id="dl-speed-mini">0 MB/s</span>
         </div>
     </nav>
     <main id="content"></main>

@@ -235,6 +235,22 @@ async def get_movie(movie_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 
+@api_router.get("/movies/{movie_id}/detail")
+async def get_movie_detail(movie_id: int, db: AsyncSession = Depends(get_db)):
+    """Get movie with live TMDB detail (cast, trailer, tagline)."""
+    movie = await db.get(Movie, movie_id)
+    if not movie:
+        raise HTTPException(404, "Movie not found")
+    detail = await tmdb.get_movie(movie.tmdb_id)
+    if not detail:
+        raise HTTPException(502, "Failed to fetch TMDB detail")
+    detail["id"] = movie.id
+    detail["has_file"] = movie.has_file
+    detail["monitored"] = movie.monitored
+    detail["path"] = movie.path
+    return detail
+
+
 @api_router.post("/movies")
 async def add_movie(req: AddMovieRequest, db: AsyncSession = Depends(get_db)):
     """Add a movie from TMDB. Fetches metadata and optionally searches indexers."""
@@ -362,6 +378,34 @@ async def get_series(series_id: int, db: AsyncSession = Depends(get_db)):
     if not series:
         raise HTTPException(404, "Series not found")
     return series
+
+
+@api_router.get("/series/{series_id}/detail")
+async def get_series_detail(series_id: int, db: AsyncSession = Depends(get_db)):
+    """Get series with live TMDB detail (cast, seasons, episodes)."""
+    series = await db.get(Series, series_id)
+    if not series:
+        raise HTTPException(404, "Series not found")
+    tmdb_id = series.tmdb_id or series.tvdb_id
+    detail = await tmdb.get_tv(tmdb_id)
+    if not detail:
+        raise HTTPException(502, "Failed to fetch TMDB detail")
+    detail["id"] = series.id
+    detail["monitored"] = series.monitored
+    return detail
+
+
+@api_router.get("/series/{series_id}/season/{season_number}")
+async def get_series_season(series_id: int, season_number: int, db: AsyncSession = Depends(get_db)):
+    """Get episode list for a season from TMDB."""
+    series = await db.get(Series, series_id)
+    if not series:
+        raise HTTPException(404, "Series not found")
+    tmdb_id = series.tmdb_id or series.tvdb_id
+    season_data = await tmdb.get_tv_season(tmdb_id, season_number)
+    if not season_data:
+        raise HTTPException(502, "Failed to fetch season detail")
+    return season_data
 
 
 # ============================================================
@@ -612,3 +656,48 @@ async def scheduler_status():
     """Get background scheduler status."""
     from app.core.queue import scheduler
     return scheduler.status
+
+
+# ============================================================
+# PLEX — trigger library scan
+# ============================================================
+
+@api_router.post("/plex/scan")
+async def plex_scan(section: int = 0):
+    """Trigger Plex library scan. Requires media_server type=plex and a token."""
+    import httpx
+    if settings.media_server.type != "plex" or not settings.media_server.url or not settings.media_server.token:
+        return {"triggered": False, "reason": "Plex not configured (set GG_MEDIA_SERVER_TYPE=plex, GG_MEDIA_SERVER_URL, GG_MEDIA_SERVER_TOKEN)"}
+    base = settings.media_server.url.rstrip("/")
+    headers = {"X-Plex-Token": settings.media_server.token, "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if section:
+                resp = await client.get(f"{base}/library/sections/{section}/refresh", headers=headers)
+            else:
+                resp = await client.get(f"{base}/library/sections/all/refresh", headers=headers)
+            return {"triggered": resp.status_code == 200, "status_code": resp.status_code}
+    except Exception as e:
+        return {"triggered": False, "reason": str(e)}
+
+
+@api_router.get("/plex/sections")
+async def plex_sections():
+    """List Plex library sections."""
+    import httpx
+    if settings.media_server.type != "plex" or not settings.media_server.url or not settings.media_server.token:
+        return {"sections": [], "reason": "Plex not configured"}
+    base = settings.media_server.url.rstrip("/")
+    headers = {"X-Plex-Token": settings.media_server.token, "Accept": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{base}/library/sections", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {"sections": [
+                    {"key": s["key"], "title": s["title"], "type": s["type"]}
+                    for s in data.get("MediaContainer", {}).get("Directory", [])
+                ]}
+            return {"sections": [], "reason": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"sections": [], "reason": str(e)}
