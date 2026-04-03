@@ -5,7 +5,8 @@ ONE port. ONE interface. Everything lives here.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1001,3 +1002,138 @@ async def library_recent(limit: int = 20):
     for r in recent:
         r.pop("mtime", None)
     return {"items": recent[:limit], "total": len(recent)}
+
+
+@api_router.get("/library/browse")
+async def library_browse(path: str = ""):
+    """Browse a specific folder in the media root. Returns playable files with stream URLs."""
+    media_root = settings.paths.media_root
+    if path:
+        target = _Path(path)
+    else:
+        target = media_root
+
+    # Security: ensure the path is within media_root
+    try:
+        target.resolve().relative_to(media_root.resolve())
+    except ValueError:
+        raise HTTPException(403, "Path outside media root")
+
+    if not target.exists():
+        raise HTTPException(404, "Path not found")
+
+    all_media = VIDEO_EXT | AUDIO_EXT | BOOK_EXT
+    items = []
+    if target.is_dir():
+        for item in sorted(target.iterdir()):
+            if item.name.startswith("."):
+                continue
+            entry = {"name": item.name, "path": str(item)}
+            if item.is_dir():
+                entry["type"] = "folder"
+                # Count files
+                count = sum(1 for f in item.rglob("*") if f.is_file() and f.suffix.lower() in all_media)
+                entry["file_count"] = count
+            elif item.is_file() and item.suffix.lower() in all_media:
+                ext = item.suffix.lower()
+                entry["type"] = "video" if ext in VIDEO_EXT else "audio" if ext in AUDIO_EXT else "book"
+                entry["size"] = item.stat().st_size
+                # Stream URL — use base64 of relative path to avoid path issues
+                import base64
+                rel = str(item.relative_to(media_root))
+                entry["stream_url"] = "/api/stream/" + base64.urlsafe_b64encode(rel.encode()).decode()
+            else:
+                continue
+            items.append(entry)
+    return {"items": items, "path": str(target), "parent": str(target.parent) if target != media_root else None}
+
+
+# ============================================================
+# STREAM — serve media files with range request support
+# ============================================================
+
+import base64 as _b64
+import mimetypes
+
+MIME_MAP = {
+    ".mp4": "video/mp4", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+    ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+    ".ts": "video/mp2t", ".m2ts": "video/mp2t", ".flv": "video/x-flv",
+    ".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg", ".opus": "audio/opus", ".wav": "audio/wav",
+    ".wma": "audio/x-ms-wma", ".aac": "audio/aac",
+}
+
+
+@api_router.get("/stream/{file_token}")
+async def stream_media(file_token: str, request: Request):
+    """Stream a media file. Supports HTTP range requests for seeking."""
+    try:
+        rel_path = _b64.urlsafe_b64decode(file_token).decode()
+    except Exception:
+        raise HTTPException(400, "Invalid file token")
+
+    file_path = settings.paths.media_root / rel_path
+
+    # Security check
+    try:
+        file_path.resolve().relative_to(settings.paths.media_root.resolve())
+    except ValueError:
+        raise HTTPException(403, "Path traversal blocked")
+
+    if not file_path.is_file():
+        raise HTTPException(404, "File not found")
+
+    file_size = file_path.stat().st_size
+    ext = file_path.suffix.lower()
+    content_type = MIME_MAP.get(ext, mimetypes.guess_type(str(file_path))[0] or "application/octet-stream")
+
+    # Parse range header
+    range_header = request.headers.get("range")
+    if range_header:
+        # Parse "bytes=start-end"
+        range_spec = range_header.replace("bytes=", "")
+        parts = range_spec.split("-")
+        start = int(parts[0]) if parts[0] else 0
+        end = int(parts[1]) if parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        length = end - start + 1
+
+        async def ranged_file():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            ranged_file(),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(length),
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": f'inline; filename="{file_path.name}"',
+            },
+        )
+    else:
+        # Full file
+        async def full_file():
+            with open(file_path, "rb") as f:
+                while chunk := f.read(65536):
+                    yield chunk
+
+        return StreamingResponse(
+            full_file(),
+            media_type=content_type,
+            headers={
+                "Content-Length": str(file_size),
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": f'inline; filename="{file_path.name}"',
+            },
+        )

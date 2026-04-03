@@ -524,17 +524,8 @@ async function showLibrarySection(type) {
             row.appendChild(dateSpan);
         }
 
-        // Show files on click
-        if(item.files?.length > 0){
-            row.onclick = () => {
-                const existing = row.nextElementSibling;
-                if(existing?.classList?.contains('lib-files')){ existing.remove(); return; }
-                const filesDiv = el('div','lib-files');
-                filesDiv.style.cssText='padding:4px 0 8px 30px;font-size:11px;color:var(--text-dim)';
-                item.files.forEach(f => { filesDiv.appendChild(el('div','','\u2022 '+f)); });
-                row.after(filesDiv);
-            };
-        }
+        // Click to browse folder contents (with playable files)
+        row.onclick = () => browseFolder(item.path);
 
         body.appendChild(row);
     });
@@ -1037,6 +1028,110 @@ function showDetailModal(data, type, inLibrary) {
 
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+}
+
+// ── Media Player ──────────────────────────────────────────
+function playMedia(streamUrl, title, type) {
+    // Close any existing player
+    document.querySelectorAll('.player-overlay').forEach(e=>e.remove());
+
+    const overlay = el('div','player-overlay');
+    const closeBtn = el('button','player-close','\u00D7');
+    closeBtn.onclick = () => overlay.remove();
+    overlay.appendChild(closeBtn);
+    overlay.appendChild(el('div','player-title',title));
+
+    if(type === 'video') {
+        const video = document.createElement('video');
+        video.className = 'player-video';
+        video.controls = true;
+        video.autoplay = true;
+        video.src = streamUrl;
+        video.onerror = () => toast('Cannot play this format in browser. Try MP4/WebM files.','error');
+        overlay.appendChild(video);
+        // Keyboard shortcut to close
+        overlay.onkeydown = e => { if(e.key==='Escape') overlay.remove(); };
+    } else if(type === 'audio') {
+        const audioDiv = el('div','player-audio');
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.autoplay = true;
+        audio.src = streamUrl;
+        audio.style.width = '100%';
+        audioDiv.appendChild(audio);
+        overlay.appendChild(audioDiv);
+    }
+
+    overlay.appendChild(el('div','player-info','Press Escape or click \u00D7 to close'));
+
+    // Click backdrop to close
+    overlay.onclick = e => { if(e.target === overlay) overlay.remove(); };
+
+    document.body.appendChild(overlay);
+    // Focus for keyboard events
+    overlay.tabIndex = -1;
+    overlay.focus();
+    overlay.onkeydown = e => { if(e.key === 'Escape') overlay.remove(); };
+}
+
+// ── Library: Browsable file view ──────────────────────────
+async function browseFolder(path) {
+    const data = await api('/library/browse?path='+encodeURIComponent(path));
+    if(!data) { toast('Failed to browse folder','error'); return; }
+
+    const sectionDiv = document.getElementById('library-section');
+    if(!sectionDiv) return;
+    sectionDiv.textContent='';
+
+    const panel = el('div','panel');
+    const head = el('div','panel-header');
+
+    // Breadcrumb / back button
+    const headContent = el('div',''); headContent.style.cssText='display:flex;align-items:center;gap:8px';
+    if(data.parent) {
+        const backBtn = el('button','btn btn-ghost btn-xs','\u2190 Back');
+        backBtn.onclick = () => browseFolder(data.parent);
+        headContent.appendChild(backBtn);
+    }
+    // Show just the last folder name
+    const parts = data.path.replace(/\\/g,'/').split('/');
+    headContent.appendChild(el('span','',parts[parts.length-1] || data.path));
+    head.appendChild(headContent);
+    panel.appendChild(head);
+
+    const body = el('div','panel-body');
+    if(data.items.length === 0) {
+        body.appendChild(el('div','empty','No media files in this folder'));
+    } else {
+        data.items.forEach(item => {
+            const row = el('div','file-row');
+
+            if(item.type === 'folder') {
+                row.appendChild(el('span','file-icon','\uD83D\uDCC1'));
+                const name = el('span','file-name',item.name); row.appendChild(name);
+                row.appendChild(el('span','file-meta',(item.file_count||0)+' files'));
+                row.onclick = () => browseFolder(item.path);
+            } else {
+                // Playable file
+                const icon = item.type==='video' ? '\uD83C\uDFA5' : item.type==='audio' ? '\uD83C\uDFB5' : '\uD83D\uDCD6';
+                row.appendChild(el('span','file-icon',icon));
+                const name = el('span','file-name',item.name); row.appendChild(name);
+                row.appendChild(el('span','file-meta',fmtBytes(item.size||0)));
+
+                if(item.stream_url && (item.type==='video' || item.type==='audio')) {
+                    const playBtn = el('button','play-btn','\u25B6');
+                    playBtn.title = 'Play';
+                    playBtn.onclick = (e) => { e.stopPropagation(); playMedia(item.stream_url, item.name, item.type); };
+                    row.appendChild(playBtn);
+                }
+            }
+
+            body.appendChild(row);
+        });
+    }
+    panel.appendChild(body);
+    sectionDiv.appendChild(panel);
+    sectionDiv.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 // ── Nav count badges ──────────────────────────────────────
