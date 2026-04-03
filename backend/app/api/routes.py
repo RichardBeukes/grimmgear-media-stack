@@ -1682,3 +1682,102 @@ async def books_library():
                 "path": str(item),
             })
     return {"books": books, "total": len(books)}
+
+
+# ============================================================
+# AUTH — local accounts with JWT
+# ============================================================
+
+from app.core.auth import auth_service
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    email: str = ""
+    role: str = "user"
+
+
+@api_router.post("/auth/login")
+async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Login and get a JWT token."""
+    result = await db.execute(select(User).where(User.username == req.username))
+    user = result.scalar_one_or_none()
+    if not user or not auth_service.verify_password(req.password, user.hashed_password):
+        raise HTTPException(401, "Invalid username or password")
+    if not user.is_active:
+        raise HTTPException(403, "Account disabled")
+    token = auth_service.create_token(user.id, user.username, user.role)
+    return {"token": token, "username": user.username, "role": user.role}
+
+
+@api_router.post("/auth/register")
+async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    """Register a new user account."""
+    # Check if any users exist (first user becomes admin)
+    count_result = await db.execute(select(User))
+    existing_users = count_result.scalars().all()
+    is_first = len(existing_users) == 0
+    role = "admin" if is_first else req.role
+
+    # Check duplicate
+    dup = await db.execute(select(User).where(User.username == req.username))
+    if dup.scalar_one_or_none():
+        raise HTTPException(409, "Username already taken")
+
+    user = User(
+        username=req.username,
+        email=req.email,
+        hashed_password=auth_service.hash_password(req.password),
+        role=role,
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()
+
+    token = auth_service.create_token(user.id, user.username, user.role)
+    return {
+        "registered": True, "username": user.username, "role": user.role,
+        "token": token, "is_first_user": is_first,
+    }
+
+
+@api_router.get("/auth/me")
+async def get_me(request: Request):
+    """Get current user info from token."""
+    from app.core.auth import get_current_user
+    user = await get_current_user(request)
+    if not user:
+        return {"authenticated": False}
+    return {"authenticated": True, **user}
+
+
+@api_router.get("/auth/users")
+async def list_users(db: AsyncSession = Depends(get_db)):
+    """List all users (admin only in production)."""
+    result = await db.execute(select(User))
+    return [
+        {"id": u.id, "username": u.username, "role": u.role, "is_active": u.is_active}
+        for u in result.scalars().all()
+    ]
+
+
+@api_router.get("/setup/status")
+async def setup_status(db: AsyncSession = Depends(get_db)):
+    """Check if first-run setup is needed."""
+    result = await db.execute(select(User))
+    users = result.scalars().all()
+    indexers = await db.execute(select(Indexer))
+    idx_list = indexers.scalars().all()
+    return {
+        "needs_setup": len(users) == 0,
+        "has_users": len(users) > 0,
+        "has_indexers": len(idx_list) > 0,
+        "media_root": str(settings.paths.media_root),
+        "media_root_exists": settings.paths.media_root.exists(),
+    }
