@@ -120,17 +120,25 @@ async def lifespan(app: FastAPI):
             await mod.startup()
             logger.info(f"Module started: {mod.name}")
 
+    # Start background scheduler (import scans, RSS sync)
+    from app.core.queue import scheduler
+    await scheduler.start()
+    logger.info("Background scheduler started")
+
     # Start DLNA server if streaming module is enabled
     streaming_mod = registry.get("streaming")
     if streaming_mod and streaming_mod.enabled and settings.dlna.enabled:
         logger.info(f"DLNA server: {settings.dlna.friendly_name} on port {settings.dlna.port}")
 
-    logger.info(f"GrimmGear ready at http://{settings.server.host}:{settings.server.port}")
+    logger.info(f"GrimmGear Mediarr ready at http://{settings.server.host}:{settings.server.port}")
 
     yield
 
     # Shutdown
-    logger.info("Shutting down GrimmGear...")
+    logger.info("Shutting down GrimmGear Mediarr...")
+    from app.core.queue import scheduler
+    await scheduler.stop()
+
     for mod in registry.get_enabled():
         if mod.shutdown:
             await mod.shutdown()

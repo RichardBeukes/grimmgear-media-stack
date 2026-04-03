@@ -582,3 +582,33 @@ async def list_quality_profiles(db: AsyncSession = Depends(get_db)):
         }
         for p in result.scalars().all()
     ]
+
+
+# ============================================================
+# IMPORT PIPELINE — scan and import completed downloads
+# ============================================================
+
+@api_router.post("/import/scan")
+async def trigger_import_scan():
+    """Manually trigger an import scan of completed downloads."""
+    from app.core.import_pipeline import import_pipeline
+    result = await import_pipeline.scan_and_import()
+    return result
+
+
+@api_router.get("/import/status")
+async def import_status():
+    """Get import pipeline statistics."""
+    from app.core.import_pipeline import import_pipeline
+    return import_pipeline.stats
+
+
+# ============================================================
+# SCHEDULER — background task status
+# ============================================================
+
+@api_router.get("/scheduler/status")
+async def scheduler_status():
+    """Get background scheduler status."""
+    from app.core.queue import scheduler
+    return scheduler.status
