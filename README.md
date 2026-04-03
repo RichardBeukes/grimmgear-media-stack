@@ -1,4 +1,4 @@
-# GrimmGear Media Stack
+# GrimmGear Mediarr Stack
 
 > One system. Every media type. Every feature. Toggle what you need.
 
