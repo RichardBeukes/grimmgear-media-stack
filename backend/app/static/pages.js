@@ -175,141 +175,214 @@ async function renderMediaTab(container, mediaType, tab) {
 }
 
 // ── Calendar ─────────────────────────────────────────────
+var _calViewDate = new Date();
+var _calView = 'month';
+
 async function renderCalendar() {
     content.textContent = '';
     content.appendChild(el('h1','page-title','Calendar'));
-    content.appendChild(el('p','page-subtitle','Upcoming releases across all enabled modules'));
 
-    // Use smart calendar that respects module toggles
-    const now = new Date();
-    const data = await api('/calendar/smart');
-    if (!data || !data.events || data.events.length === 0) {
-        const empty = el('div','panel');
-        const emptyBody = el('div','panel-body');
-        emptyBody.appendChild(el('p','','No calendar events. Add movies or TV series to see upcoming releases.'));
-        empty.appendChild(emptyBody);
-        content.appendChild(empty);
-        return;
-    }
+    var typeColors = {movie:'var(--yellow)',tv:'var(--cyan)',tv_episode:'var(--cyan)',album:'var(--green)',music:'var(--green)',book:'var(--orange)',comic:'var(--red)'};
+    var tagColors = {movie:'tag-yellow',tv:'tag-cyan',tv_episode:'tag-cyan',album:'tag-green',music:'tag-green',book:'tag-orange',comic:'tag-red'};
 
-    // Group events by date
-    const grouped = {};
-    for (const ev of data.events) {
-        const d = ev.date || 'Unknown';
-        if (!grouped[d]) grouped[d] = [];
-        grouped[d].push(ev);
-    }
-
-    // View toggle buttons
-    const nav = el('div','filter-bar');
-    const viewMonth = el('button','btn btn-sm btn-ghost','Month View');
-    const viewList = el('button','btn btn-sm active','List View');
-    nav.appendChild(viewMonth);
-    nav.appendChild(viewList);
+    // View switcher + month nav
+    var nav = el('div','filter-bar');
+    nav.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+    var prevBtn = el('button','btn btn-sm','\u25C0');
+    var nextBtn = el('button','btn btn-sm','\u25B6');
+    var todayBtn = el('button','btn btn-sm','Today');
+    var monthLabel = el('span','page-subtitle','');
+    monthLabel.style.cssText = 'min-width:180px;text-align:center;font-weight:600;font-size:16px';
+    var spacer = el('span',''); spacer.style.flex = '1';
+    var viewBtns = el('div','btn-group');
+    var btnMonth = el('button','btn btn-sm' + (_calView==='month'?' btn-primary':''),'Month');
+    var btnWeek = el('button','btn btn-sm' + (_calView==='week'?' btn-primary':''),'Week');
+    var btnYear = el('button','btn btn-sm' + (_calView==='year'?' btn-primary':''),'Year');
+    viewBtns.appendChild(btnMonth); viewBtns.appendChild(btnWeek); viewBtns.appendChild(btnYear);
+    nav.appendChild(prevBtn); nav.appendChild(todayBtn); nav.appendChild(nextBtn);
+    nav.appendChild(monthLabel); nav.appendChild(spacer); nav.appendChild(viewBtns);
     content.appendChild(nav);
 
-    // Month grid
-    const calGrid = el('div','calendar-grid');
-    calGrid.style.display = 'none';
-    calGrid.style.gridTemplateColumns = 'repeat(7,1fr)';
-    calGrid.style.gap = '2px';
-    calGrid.style.marginTop = '12px';
+    var calArea = el('div','');
+    content.appendChild(calArea);
 
-    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    for (const dn of dayNames) {
-        const hdr = el('div','','');
-        hdr.textContent = dn;
-        hdr.style.textAlign = 'center';
-        hdr.style.padding = '4px';
-        hdr.style.fontWeight = '600';
-        hdr.style.color = 'var(--text-dim)';
-        hdr.style.fontSize = '12px';
-        calGrid.appendChild(hdr);
+    // Upcoming list below calendar
+    var upcomingPanel = el('div','panel');
+    upcomingPanel.style.marginTop = '12px';
+    content.appendChild(upcomingPanel);
+
+    var data = await api('/calendar/smart');
+    var events = (data && data.events) || [];
+    var grouped = {};
+    for (var i = 0; i < events.length; i++) {
+        var d = events[i].date || '';
+        if (!grouped[d]) grouped[d] = [];
+        grouped[d].push(events[i]);
     }
 
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const firstDay = monthStart.getDay();
-    for (let i = 0; i < firstDay; i++) calGrid.appendChild(el('div',''));
+    function fmtMonthYear(dt) {
+        var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        return months[dt.getMonth()] + ' ' + dt.getFullYear();
+    }
 
-    const todayStr = now.toISOString().split('T')[0];
-    for (let d = 1; d <= monthEnd.getDate(); d++) {
-        const dateStr = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-        const cell = el('div','');
-        cell.style.minHeight = '60px';
-        cell.style.padding = '4px';
-        cell.style.background = 'var(--card-bg)';
-        cell.style.borderRadius = '4px';
-        cell.style.fontSize = '12px';
-        const dayNum = el('div','',String(d));
-        dayNum.style.fontWeight = '600';
-        if (dateStr === todayStr) dayNum.style.color = 'var(--accent)';
-        cell.appendChild(dayNum);
-        const dayEvents = grouped[dateStr] || [];
-        for (const ev of dayEvents.slice(0, 3)) {
-            const dot = el('div','',ev.title.substring(0, 20));
-            dot.style.fontSize = '10px';
-            dot.style.padding = '1px 3px';
-            dot.style.marginTop = '1px';
-            dot.style.borderRadius = '2px';
-            dot.style.overflow = 'hidden';
-            dot.style.whiteSpace = 'nowrap';
-            dot.style.textOverflow = 'ellipsis';
-            var typeColors = {movie:'var(--yellow)',tv:'var(--cyan)',tv_episode:'var(--cyan)',album:'var(--green)',music:'var(--green)',book:'var(--orange)',comic:'var(--red)'};
-            dot.style.background = typeColors[ev.type] || 'var(--cyan)';
-            dot.style.color = '#000';
-            cell.appendChild(dot);
+    function drawMonth() {
+        calArea.textContent = '';
+        monthLabel.textContent = fmtMonthYear(_calViewDate);
+        var grid = el('div','');
+        grid.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-top:8px';
+        var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        for (var i = 0; i < 7; i++) {
+            var hdr = el('div','',dayNames[i]);
+            hdr.style.cssText = 'text-align:center;padding:6px;font-weight:700;color:var(--text-dim);font-size:12px;background:var(--bg-secondary);border-radius:4px';
+            grid.appendChild(hdr);
         }
-        calGrid.appendChild(cell);
+        var ms = new Date(_calViewDate.getFullYear(), _calViewDate.getMonth(), 1);
+        var me = new Date(_calViewDate.getFullYear(), _calViewDate.getMonth() + 1, 0);
+        var today = new Date().toISOString().split('T')[0];
+        for (var i = 0; i < ms.getDay(); i++) { var e = el('div',''); e.style.background = 'var(--bg-primary)'; grid.appendChild(e); }
+        for (var d = 1; d <= me.getDate(); d++) {
+            var ds = _calViewDate.getFullYear()+'-'+String(_calViewDate.getMonth()+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+            var cell = el('div','');
+            cell.style.cssText = 'min-height:80px;padding:4px;background:var(--card-bg);border-radius:4px;font-size:12px;border:1px solid var(--border)';
+            if (ds === today) cell.style.border = '2px solid var(--accent)';
+            var dn = el('div','',String(d));
+            dn.style.cssText = 'font-weight:700;margin-bottom:2px';
+            if (ds === today) dn.style.color = 'var(--accent)';
+            cell.appendChild(dn);
+            var dayEvs = grouped[ds] || [];
+            for (var j = 0; j < Math.min(dayEvs.length, 4); j++) {
+                var dot = el('div','',dayEvs[j].title.substring(0,25));
+                dot.style.cssText = 'font-size:9px;padding:1px 3px;margin-top:1px;border-radius:2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#000;background:' + (typeColors[dayEvs[j].type]||'var(--cyan)');
+                cell.appendChild(dot);
+            }
+            if (dayEvs.length > 4) cell.appendChild(el('div','text-dim','+' + (dayEvs.length-4) + ' more'));
+            grid.appendChild(cell);
+        }
+        calArea.appendChild(grid);
     }
-    content.appendChild(calGrid);
 
-    // List view
-    const listDiv = el('div','');
-    const sortedDates = Object.keys(grouped).sort();
-    for (const date of sortedDates) {
-        const section = el('div','panel');
-        section.style.marginTop = '8px';
-        const isToday = date === todayStr;
-        const isPast = date < todayStr;
-        const headerText = date + (isToday ? '  (Today)' : isPast ? '  (Past)' : '');
-        const header = el('div','panel-header', headerText);
-        if (isToday) header.style.color = 'var(--accent)';
-        if (isPast) header.style.opacity = '0.6';
-        section.appendChild(header);
-        const body = el('div','panel-body');
-        for (const ev of grouped[date]) {
-            const row = el('div','table-row');
-            row.style.display = 'flex';
-            row.style.alignItems = 'center';
-            row.style.gap = '8px';
-            row.style.padding = '6px 0';
-            var tagColors = {movie:'tag-yellow',tv:'tag-cyan',tv_episode:'tag-cyan',album:'tag-green',music:'tag-green',book:'tag-orange',comic:'tag-red'};
-            const typeTag = el('span','tag ' + (tagColors[ev.type] || 'tag-cyan'), ev.type);
-            row.appendChild(typeTag);
-            const title = el('span','',ev.title);
-            title.style.flex = '1';
-            row.appendChild(title);
-            row.appendChild(el('span','tag ' + (ev.has_file ? 'tag-green' : 'tag-orange'), ev.has_file ? 'On Disk' : 'Missing'));
+    function drawWeek() {
+        calArea.textContent = '';
+        var start = new Date(_calViewDate);
+        start.setDate(start.getDate() - start.getDay());
+        var end = new Date(start); end.setDate(end.getDate() + 6);
+        monthLabel.textContent = 'Week of ' + start.toLocaleDateString() + ' \u2013 ' + end.toLocaleDateString();
+        var grid = el('div','');
+        grid.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px';
+        var today = new Date().toISOString().split('T')[0];
+        for (var i = 0; i < 7; i++) {
+            var day = new Date(start); day.setDate(day.getDate() + i);
+            var ds = day.toISOString().split('T')[0];
+            var dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            var cell = el('div','');
+            cell.style.cssText = 'min-height:200px;padding:6px;background:var(--card-bg);border-radius:4px;border:1px solid var(--border)';
+            if (ds === today) cell.style.border = '2px solid var(--accent)';
+            var hdr = el('div','',dayNames[i] + ' ' + day.getDate());
+            hdr.style.cssText = 'font-weight:700;font-size:13px;margin-bottom:4px';
+            if (ds === today) hdr.style.color = 'var(--accent)';
+            cell.appendChild(hdr);
+            var dayEvs = grouped[ds] || [];
+            for (var j = 0; j < dayEvs.length; j++) {
+                var item = el('div','',dayEvs[j].title);
+                item.style.cssText = 'font-size:11px;padding:2px 4px;margin-top:2px;border-radius:3px;color:#000;background:' + (typeColors[dayEvs[j].type]||'var(--cyan)');
+                cell.appendChild(item);
+            }
+            if (!dayEvs.length) cell.appendChild(el('div','text-dim','No events'));
+            grid.appendChild(cell);
+        }
+        calArea.appendChild(grid);
+    }
+
+    function drawYear() {
+        calArea.textContent = '';
+        monthLabel.textContent = String(_calViewDate.getFullYear());
+        var yearGrid = el('div','');
+        yearGrid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px';
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        var today = new Date().toISOString().split('T')[0];
+        for (var m = 0; m < 12; m++) {
+            var mPanel = el('div','');
+            mPanel.style.cssText = 'background:var(--card-bg);border-radius:6px;padding:8px;border:1px solid var(--border)';
+            var mHead = el('div','',months[m]);
+            mHead.style.cssText = 'font-weight:700;font-size:13px;margin-bottom:4px;text-align:center';
+            if (m === new Date().getMonth() && _calViewDate.getFullYear() === new Date().getFullYear()) mHead.style.color = 'var(--accent)';
+            mPanel.appendChild(mHead);
+            var mDays = new Date(_calViewDate.getFullYear(), m + 1, 0).getDate();
+            var miniGrid = el('div','');
+            miniGrid.style.cssText = 'display:grid;grid-template-columns:repeat(7,1fr);gap:1px;font-size:9px';
+            var firstDay = new Date(_calViewDate.getFullYear(), m, 1).getDay();
+            for (var i = 0; i < firstDay; i++) miniGrid.appendChild(el('div',''));
+            for (var d = 1; d <= mDays; d++) {
+                var ds = _calViewDate.getFullYear()+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+                var dc = el('div','',String(d));
+                dc.style.cssText = 'text-align:center;padding:1px;border-radius:2px';
+                if (ds === today) { dc.style.background = 'var(--accent)'; dc.style.color = '#000'; dc.style.fontWeight = '700'; }
+                else if (grouped[ds]) { dc.style.background = typeColors[(grouped[ds][0]||{}).type] || 'var(--cyan)'; dc.style.color = '#000'; }
+                miniGrid.appendChild(dc);
+            }
+            mPanel.appendChild(miniGrid);
+            // Count events this month
+            var evCount = 0;
+            for (var d = 1; d <= mDays; d++) {
+                var ds = _calViewDate.getFullYear()+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+                evCount += (grouped[ds]||[]).length;
+            }
+            if (evCount) mPanel.appendChild(el('div','text-dim',evCount + ' events'));
+            mPanel.style.cursor = 'pointer';
+            (function(month) { mPanel.onclick = function() { _calViewDate = new Date(_calViewDate.getFullYear(), month, 1); _calView = 'month'; draw(); }; })(m);
+            yearGrid.appendChild(mPanel);
+        }
+        calArea.appendChild(yearGrid);
+    }
+
+    function drawUpcoming() {
+        upcomingPanel.textContent = '';
+        upcomingPanel.appendChild(el('div','panel-header','Upcoming Releases (' + events.length + ')'));
+        var body = el('div','panel-body');
+        body.style.maxHeight = '300px';
+        body.style.overflow = 'auto';
+        if (!events.length) { body.appendChild(el('p','text-dim','No upcoming events. Enable modules and add media.')); }
+        for (var i = 0; i < Math.min(events.length, 30); i++) {
+            var ev = events[i];
+            var row = el('div','table-row');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)';
+            row.appendChild(el('span','tag ' + (tagColors[ev.type]||''), ev.type));
+            row.appendChild(el('span','text-dim', ev.date || ''));
+            var t = el('span','',ev.title); t.style.flex = '1'; row.appendChild(t);
+            if (ev.source) row.appendChild(el('span','text-dim', ev.source));
             body.appendChild(row);
         }
-        section.appendChild(body);
-        listDiv.appendChild(section);
+        upcomingPanel.appendChild(body);
     }
-    content.appendChild(listDiv);
 
-    viewMonth.onclick = function() {
-        calGrid.style.display = 'grid';
-        listDiv.style.display = 'none';
-        viewMonth.classList.add('active');
-        viewList.classList.remove('active');
+    function draw() {
+        btnMonth.className = 'btn btn-sm' + (_calView==='month'?' btn-primary':'');
+        btnWeek.className = 'btn btn-sm' + (_calView==='week'?' btn-primary':'');
+        btnYear.className = 'btn btn-sm' + (_calView==='year'?' btn-primary':'');
+        if (_calView === 'month') drawMonth();
+        else if (_calView === 'week') drawWeek();
+        else drawYear();
+        drawUpcoming();
+    }
+
+    prevBtn.onclick = function() {
+        if (_calView === 'month') _calViewDate.setMonth(_calViewDate.getMonth() - 1);
+        else if (_calView === 'week') _calViewDate.setDate(_calViewDate.getDate() - 7);
+        else _calViewDate.setFullYear(_calViewDate.getFullYear() - 1);
+        draw();
     };
-    viewList.onclick = function() {
-        calGrid.style.display = 'none';
-        listDiv.style.display = '';
-        viewList.classList.add('active');
-        viewMonth.classList.remove('active');
+    nextBtn.onclick = function() {
+        if (_calView === 'month') _calViewDate.setMonth(_calViewDate.getMonth() + 1);
+        else if (_calView === 'week') _calViewDate.setDate(_calViewDate.getDate() + 7);
+        else _calViewDate.setFullYear(_calViewDate.getFullYear() + 1);
+        draw();
     };
+    todayBtn.onclick = function() { _calViewDate = new Date(); draw(); };
+    btnMonth.onclick = function() { _calView = 'month'; draw(); };
+    btnWeek.onclick = function() { _calView = 'week'; draw(); };
+    btnYear.onclick = function() { _calView = 'year'; draw(); };
+
+    draw();
 }
 
 // ── Blocklist ────────────────────────────────────────────

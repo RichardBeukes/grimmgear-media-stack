@@ -42,11 +42,12 @@ function navigate(page) {
     const overlay = document.querySelector('.mobile-overlay');
     if (overlay) overlay.classList.remove('active');
     // Route
-    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,music:renderMusic,books:renderBooks,comics:renderComics,search:renderSearch,downloads:renderDownloads,library:renderLibrary,calendar:renderCalendar,requests:renderRequests,indexers:renderIndexers,blocklist:renderBlocklist,system:renderSystem,settings:renderSettings};
-    const fn = routes[page];
-    if (fn) {
-        try { fn(); } catch(e) { console.error('Page render error:', page, e); content.textContent='Error loading ' + page; }
-    } else { renderDashboard(); }
+    const pageMap = {dashboard:'renderDashboard',movies:'renderMovies',tv:'renderTV',music:'renderMusic',books:'renderBooks',comics:'renderComics',search:'renderSearch',downloads:'renderDownloads',library:'renderLibrary',calendar:'renderCalendar',requests:'renderRequests',indexers:'renderIndexers',blocklist:'renderBlocklist',system:'renderSystem',settings:'renderSettings'};
+    const fnName = pageMap[page];
+    const fn = fnName ? window[fnName] : null;
+    if (fn && typeof fn === 'function') {
+        try { fn(); } catch(e) { console.error('Page error:', page, e); content.textContent='Error: ' + page + ' - ' + e.message; }
+    } else { console.warn('Page function not found:', page, fnName); renderDashboard(); }
     window.location.hash = page;
 }
 
@@ -152,8 +153,8 @@ async function renderDashboard() {
 // ── Media Card ────────────────────────────────────────────
 function mkMediaCard(title, year, poster, hasFile) {
     const card = el('div','media-card');
-    const img = document.createElement('img'); img.src=poster||''; img.alt=title; img.loading='lazy';
-    img.onerror=function(){this.style.background='#333';this.src='';}; card.appendChild(img);
+    const img = document.createElement('img'); img.src=poster||''; img.alt=''; img.loading='lazy';
+    img.onerror=function(){this.style.background='#333';this.style.minHeight='120px';this.removeAttribute('alt');this.src='';}; card.appendChild(img);
     if(hasFile){ const badge=el('div','card-badge tag-green','ON DISK'); card.appendChild(badge); }
     const info = el('div','card-info');
     info.appendChild(el('div','card-title',title));
@@ -413,7 +414,9 @@ function dlStateLabel(state) {
 }
 
 // ── Library ───────────────────────────────────────────────
+let _libRendering = false;
 async function renderLibrary() {
+    if (_libRendering) return; _libRendering = true;
     content.textContent='';
     content.appendChild(el('div','page-title','Library'));
     content.appendChild(el('div','page-subtitle','What\u2019s on disk in your media directories'));
@@ -530,6 +533,7 @@ async function showLibrarySection(type) {
 
     // Scroll to section
     sectionDiv.scrollIntoView({behavior:'smooth',block:'start'});
+    _libRendering = false;
 }
 
 // ── Requests ──────────────────────────────────────────────
@@ -623,7 +627,9 @@ async function searchForRequest() {
 }
 
 // ── Indexers ──────────────────────────────────────────────
+let _idxRendering = false;
 async function renderIndexers() {
+    if (_idxRendering) return; _idxRendering = true;
     content.textContent='';
     content.appendChild(el('div','page-title','Indexers'));
 
@@ -820,6 +826,7 @@ function showAddIndexerManual(){
     };
     body.appendChild(btn);
     panel.appendChild(body); area.appendChild(panel);
+    _idxRendering = false;
 }
 
 // ── Settings ──────────────────────────────────────────────
