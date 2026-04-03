@@ -632,7 +632,17 @@ async function renderIndexers() {
     content.textContent='';
     content.appendChild(el('div','page-title','Indexers'));
 
-    const [indexers, discovered] = await Promise.all([api('/indexers'), api('/indexers/discover')]);
+    const [indexers, discovered, idxStats] = await Promise.all([api('/indexers'), api('/indexers/discover'), api('/indexers/stats')]);
+
+    // Indexer stats overview (like Prowlarr)
+    if(idxStats){
+        const statsRow = el('div','stat-row');
+        statsRow.appendChild(((label,val,color)=>{const c=el('div','stat-card');const b=el('div','accent-bar');b.style.background=color;c.appendChild(b);c.appendChild(el('div','stat-label',label));c.appendChild(el('div','stat-value',String(val)));return c;})('Total Queries',idxStats.total_queries,'var(--accent)'));
+        statsRow.appendChild(((label,val,color)=>{const c=el('div','stat-card');const b=el('div','accent-bar');b.style.background=color;c.appendChild(b);c.appendChild(el('div','stat-label',label));c.appendChild(el('div','stat-value',String(val)));return c;})('Total Grabs',idxStats.total_grabs,'var(--green)'));
+        statsRow.appendChild(((label,val,color)=>{const c=el('div','stat-card');const b=el('div','accent-bar');b.style.background=color;c.appendChild(b);c.appendChild(el('div','stat-label',label));c.appendChild(el('div','stat-value',String(val)));return c;})('Failures',idxStats.total_failures,'var(--red)'));
+        statsRow.appendChild(((label,val,color)=>{const c=el('div','stat-card');const b=el('div','accent-bar');b.style.background=color;c.appendChild(b);c.appendChild(el('div','stat-label',label));c.appendChild(el('div','stat-value',String(val)));return c;})('Indexers',indexers?.length||0,'var(--cyan)'));
+        content.appendChild(statsRow);
+    }
 
     // Prowlarr auto-import banner
     if(discovered?.prowlarr_connected && discovered.total > 0){
@@ -667,6 +677,14 @@ async function renderIndexers() {
             const nm = el('span',''); nm.style.cssText='flex:1;font-weight:600'; nm.textContent=i.name; row.appendChild(nm);
             row.appendChild(el('span','tag tag-blue',i.type));
             if(i.use_flaresolverr) row.appendChild(el('span','tag tag-orange','CF'));
+            // Per-indexer stats
+            if(i.stats){
+                const st=i.stats;
+                row.appendChild(el('span','dl-stat',st.queries+'Q'));
+                row.appendChild(el('span','dl-stat',st.grabs+'G'));
+                if(st.failures>0) row.appendChild(el('span','dl-stat',st.failures+'F'));
+                if(st.avg_response_ms>0) row.appendChild(el('span','dl-stat',st.avg_response_ms+'ms'));
+            }
             // Test button
             const testBtn = el('button','btn btn-ghost btn-xs','Test');
             testBtn.onclick=async(e)=>{

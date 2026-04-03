@@ -580,9 +580,37 @@ async def list_indexers(db: AsyncSession = Depends(get_db)):
             "id": i.id, "name": i.name, "url": i.url,
             "enabled": i.enabled, "type": i.indexer_type,
             "use_flaresolverr": i.use_flaresolverr,
+            "stats": {
+                "queries": i.query_count, "grabs": i.grab_count,
+                "failures": i.fail_count, "avg_response_ms": i.avg_response_ms,
+            },
         }
         for i in result.scalars().all()
     ]
+
+
+@api_router.get("/indexers/stats")
+async def indexer_stats(db: AsyncSession = Depends(get_db)):
+    """Indexer stats like Prowlarr's /indexers/stats page."""
+    result = await db.execute(select(Indexer).order_by(Indexer.query_count.desc()))
+    indexers = result.scalars().all()
+    total_queries = sum(i.query_count for i in indexers)
+    total_grabs = sum(i.grab_count for i in indexers)
+    total_fails = sum(i.fail_count for i in indexers)
+    return {
+        "total_queries": total_queries,
+        "total_grabs": total_grabs,
+        "total_failures": total_fails,
+        "indexers": [
+            {
+                "id": i.id, "name": i.name, "enabled": i.enabled,
+                "queries": i.query_count, "grabs": i.grab_count,
+                "failures": i.fail_count, "avg_response_ms": i.avg_response_ms,
+                "success_rate": round((i.query_count - i.fail_count) / max(i.query_count, 1) * 100, 1),
+            }
+            for i in indexers
+        ],
+    }
 
 
 @api_router.post("/indexers")

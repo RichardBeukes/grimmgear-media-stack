@@ -186,6 +186,11 @@ class Indexer(Base):
     categories: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)
     use_flaresolverr: Mapped[bool] = mapped_column(Boolean, default=False)
     mirror_urls: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)
+    # Stats (tracked per indexer like Prowlarr)
+    query_count: Mapped[int] = mapped_column(Integer, default=0)
+    grab_count: Mapped[int] = mapped_column(Integer, default=0)
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_response_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class DownloadQueueItem(Base):
