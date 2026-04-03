@@ -83,6 +83,16 @@ class DownloadClientSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GG_DL_")
 
 
+class IndexerProxySettings(BaseSettings):
+    """Auto-discover indexers from Prowlarr or Jackett."""
+    prowlarr_url: str = "http://localhost:9696"
+    prowlarr_api_key: str = ""
+    jackett_url: str = "http://localhost:9117"
+    jackett_api_key: str = ""
+
+    model_config = SettingsConfigDict(env_prefix="GG_IDX_")
+
+
 class MediaServerSettings(BaseSettings):
     """Optional external media server. If streaming module is ON, this is optional."""
     type: str = "built-in"  # built-in, plex, jellyfin, emby
@@ -119,6 +129,7 @@ class Settings(BaseSettings):
     paths: PathSettings = PathSettings()
     modules: ModuleSettings = ModuleSettings()
     download: DownloadClientSettings = DownloadClientSettings()
+    indexer_proxy: IndexerProxySettings = IndexerProxySettings()
     media_server: MediaServerSettings = MediaServerSettings()
     dlna: DLNASettings = DLNASettings()
     auth: AuthSettings = AuthSettings()

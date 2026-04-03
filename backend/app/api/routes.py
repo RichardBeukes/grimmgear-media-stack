@@ -611,6 +611,147 @@ async def delete_indexer(indexer_id: int, db: AsyncSession = Depends(get_db)):
     return {"deleted": True, "name": indexer.name}
 
 
+# ── Built-in indexer catalog (like Prowlarr's indexer list) ──
+
+INDEXER_CATALOG = [
+    {"name": "1337x", "description": "Popular general torrent site", "categories": ["Movies", "TV", "Music", "Games", "Anime"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "YTS", "description": "YIFY movies — small, high-quality encodes", "categories": ["Movies"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "The Pirate Bay", "description": "The original torrent site", "categories": ["Movies", "TV", "Music", "Games", "Books"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "EZTV", "description": "TV show torrents", "categories": ["TV"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "RARBG (clone)", "description": "RARBG database mirror / successor sites", "categories": ["Movies", "TV"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "Knaben", "description": "Multi-indexer aggregator", "categories": ["Movies", "TV", "Music", "Books", "Anime"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "LimeTorrents", "description": "Verified torrent search", "categories": ["Movies", "TV", "Music", "Games"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "TorrentGalaxy", "description": "General torrent tracker with IMDB integration", "categories": ["Movies", "TV", "Music", "Games", "Anime"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "Nyaa", "description": "Anime/Asian media torrents", "categories": ["Anime", "Music"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "Torrent Downloads", "description": "General torrent aggregator", "categories": ["Movies", "TV", "Music", "Games"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "showRSS", "description": "TV show RSS feeds", "categories": ["TV"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "TorrentProject2", "description": "Torrent meta-search engine", "categories": ["Movies", "TV", "Music"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "MagnetDownload", "description": "Magnet link aggregator", "categories": ["Movies", "TV", "Music"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "BT.etree", "description": "Live music / bootleg recordings", "categories": ["Music"], "privacy": "public", "protocol": "torrent", "needs_api_key": False},
+    {"name": "RuTracker", "description": "Russian tracker — huge library, many exclusive releases", "categories": ["Movies", "TV", "Music", "Books", "Games"], "privacy": "semi-private", "protocol": "torrent", "needs_api_key": True},
+    {"name": "IPTorrents", "description": "Large private general tracker", "categories": ["Movies", "TV", "Music", "Games", "Books"], "privacy": "private", "protocol": "torrent", "needs_api_key": True},
+    {"name": "TorrentLeech", "description": "Well-known private general tracker", "categories": ["Movies", "TV", "Music", "Games"], "privacy": "private", "protocol": "torrent", "needs_api_key": True},
+    {"name": "NZBgeek", "description": "Popular Usenet indexer", "categories": ["Movies", "TV", "Music", "Books"], "privacy": "private", "protocol": "usenet", "needs_api_key": True},
+    {"name": "NZBFinder", "description": "Usenet indexer with automation support", "categories": ["Movies", "TV", "Music"], "privacy": "private", "protocol": "usenet", "needs_api_key": True},
+    {"name": "DrunkenSlug", "description": "Usenet indexer — community-driven", "categories": ["Movies", "TV", "Music", "Books"], "privacy": "private", "protocol": "usenet", "needs_api_key": True},
+]
+
+
+@api_router.get("/indexers/catalog")
+async def indexer_catalog(category: str = ""):
+    """Browse available indexers like Prowlarr's indexer list."""
+    items = INDEXER_CATALOG
+    if category:
+        items = [i for i in items if category in i["categories"]]
+    return {"indexers": items, "total": len(items)}
+
+
+@api_router.get("/indexers/discover")
+async def discover_indexers():
+    """Auto-discover indexers from Prowlarr or Jackett if running."""
+    import httpx
+    discovered = []
+
+    # Try Prowlarr
+    prowlarr_url = settings.indexer_proxy.prowlarr_url.rstrip("/")
+    prowlarr_key = settings.indexer_proxy.prowlarr_api_key
+
+    # Auto-detect Prowlarr API key from config if not set
+    if not prowlarr_key:
+        import xml.etree.ElementTree as ET
+        for config_path in [
+            os.path.expandvars(r"%APPDATA%\Prowlarr\config.xml"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Prowlarr\config.xml"),
+            r"C:\ProgramData\Prowlarr\config.xml",
+            "/var/lib/prowlarr/config.xml",
+        ]:
+            if os.path.exists(config_path):
+                try:
+                    tree = ET.parse(config_path)
+                    key_el = tree.getroot().find("ApiKey")
+                    if key_el is not None and key_el.text:
+                        prowlarr_key = key_el.text
+                        break
+                except Exception:
+                    pass
+
+    if prowlarr_key:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{prowlarr_url}/api/v1/indexer",
+                    headers={"X-Api-Key": prowlarr_key},
+                )
+                if resp.status_code == 200:
+                    for idx in resp.json():
+                        if not idx.get("enable"):
+                            continue
+                        torznab_url = f"{prowlarr_url}/{idx['id']}/api?apikey={prowlarr_key}"
+                        cats = [c.get("name", "") for c in idx.get("capabilities", {}).get("categories", [])[:5]]
+                        discovered.append({
+                            "name": idx["name"],
+                            "source": "prowlarr",
+                            "torznab_url": torznab_url,
+                            "protocol": idx.get("protocol", "torrent"),
+                            "privacy": idx.get("privacy", "public"),
+                            "categories": cats,
+                            "prowlarr_id": idx["id"],
+                        })
+        except Exception:
+            pass
+
+    return {
+        "discovered": discovered,
+        "total": len(discovered),
+        "prowlarr_connected": len(discovered) > 0,
+        "prowlarr_url": prowlarr_url if prowlarr_key else None,
+    }
+
+
+@api_router.post("/indexers/import-from-prowlarr")
+async def import_from_prowlarr(db: AsyncSession = Depends(get_db)):
+    """One-click import all Prowlarr indexers as Torznab sources."""
+    disc = await discover_indexers()
+    if not disc["discovered"]:
+        return {"imported": 0, "message": "No Prowlarr indexers found"}
+
+    imported = 0
+    skipped = 0
+    for idx in disc["discovered"]:
+        # Check if already exists by name
+        existing = await db.execute(select(Indexer).where(Indexer.name == idx["name"]))
+        if existing.scalar_one_or_none():
+            skipped += 1
+            continue
+        indexer = Indexer(
+            name=idx["name"],
+            url=idx["torznab_url"],
+            api_key="",
+            indexer_type="torznab",
+            enabled=True,
+        )
+        db.add(indexer)
+        imported += 1
+
+    return {"imported": imported, "skipped": skipped, "total": len(disc["discovered"])}
+
+
+@api_router.post("/indexers/{indexer_id}/test")
+async def test_indexer(indexer_id: int, db: AsyncSession = Depends(get_db)):
+    """Test an indexer connection by running a simple search."""
+    indexer = await db.get(Indexer, indexer_id)
+    if not indexer:
+        raise HTTPException(404, "Indexer not found")
+    try:
+        test_results = await indexer_engine.search(
+            [{"name": indexer.name, "url": indexer.url, "api_key": indexer.api_key, "enabled": True, "indexer_type": indexer.indexer_type}],
+            "test", None, None, None, None, None,
+        )
+        return {"success": True, "results": len(test_results), "name": indexer.name}
+    except Exception as e:
+        return {"success": False, "error": str(e), "name": indexer.name}
+
+
 # ============================================================
 # QUALITY PROFILES
 # ============================================================

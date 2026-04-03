@@ -546,18 +546,39 @@ async function showLibrarySection(type) {
     sectionDiv.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-// ── Indexers ──────────────────────────────────────────────
+// ���─ Indexers ─���────────────────────────────────────────────
 async function renderIndexers() {
     content.textContent='';
     content.appendChild(el('div','page-title','Indexers'));
 
+    const [indexers, discovered] = await Promise.all([api('/indexers'), api('/indexers/discover')]);
+
+    // Prowlarr auto-import banner
+    if(discovered?.prowlarr_connected && discovered.total > 0){
+        const banner = el('div','panel'); banner.style.cssText='border:1px solid var(--cyan);background:rgba(53,197,244,.05)';
+        const bannerBody = el('div','panel-body'); bannerBody.style.cssText='display:flex;align-items:center;gap:12px';
+        bannerBody.appendChild(el('span','tag tag-cyan','Prowlarr'));
+        bannerBody.appendChild(el('span','',discovered.total+' indexers found at '+discovered.prowlarr_url));
+        const importBtn = el('button','btn btn-primary btn-sm','Import All');
+        importBtn.onclick = async () => {
+            const r = await apiPost('/indexers/import-from-prowlarr');
+            if(r){ toast('Imported '+r.imported+', skipped '+r.skipped+' (already exist)','success'); renderIndexers(); }
+        };
+        bannerBody.appendChild(importBtn);
+        banner.appendChild(bannerBody); content.appendChild(banner);
+    }
+
+    // My indexers
     const panel = el('div','panel');
     const head = el('div','panel-header');
-    head.appendChild(el('span','','Indexers'));
-    const addBtn = el('button','btn btn-primary btn-sm','+ Add Indexer'); addBtn.onclick=showAddIndexer; head.appendChild(addBtn);
+    head.appendChild(el('span','','My Indexers'+(indexers?.length?' ('+indexers.length+')':'')));
+    const btnGroup = el('div','btn-group');
+    const browseBtn = el('button','btn btn-primary btn-sm','Browse Catalog'); browseBtn.onclick=showIndexerCatalog; btnGroup.appendChild(browseBtn);
+    const manualBtn = el('button','btn btn-ghost btn-sm','Add Manual'); manualBtn.onclick=showAddIndexerManual; btnGroup.appendChild(manualBtn);
+    head.appendChild(btnGroup);
     panel.appendChild(head);
+
     const body = el('div','panel-body');
-    const indexers = await api('/indexers');
     if(indexers?.length>0){
         indexers.forEach(i=>{
             const row = el('div','table-row');
@@ -565,18 +586,132 @@ async function renderIndexers() {
             const nm = el('span',''); nm.style.cssText='flex:1;font-weight:600'; nm.textContent=i.name; row.appendChild(nm);
             row.appendChild(el('span','tag tag-blue',i.type));
             if(i.use_flaresolverr) row.appendChild(el('span','tag tag-orange','CF'));
+            // Test button
+            const testBtn = el('button','btn btn-ghost btn-xs','Test');
+            testBtn.onclick=async(e)=>{
+                e.stopPropagation(); testBtn.textContent='Testing...';
+                const r=await apiPost('/indexers/'+i.id+'/test');
+                if(r?.success){ testBtn.textContent=r.results+' results'; testBtn.className='btn btn-success btn-xs'; toast(i.name+': '+r.results+' results','success'); }
+                else { testBtn.textContent='Failed'; testBtn.className='btn btn-danger btn-xs'; toast(i.name+': '+(r?.error||'failed'),'error'); }
+            };
+            row.appendChild(testBtn);
             const del = el('button','btn btn-danger btn-xs','Remove'); del.onclick=()=>{if(confirm('Remove '+i.name+'?'))apiDelete('/indexers/'+i.id).then(()=>renderIndexers());}; row.appendChild(del);
             body.appendChild(row);
         });
-    } else { body.appendChild(el('div','empty','No indexers configured. Add some to search for releases.')); }
+    } else {
+        body.appendChild(el('div','empty','No indexers configured. Browse the catalog or import from Prowlarr.'));
+    }
     panel.appendChild(body); content.appendChild(panel);
-    content.appendChild(el('div','')).id='add-indexer-form';
+
+    // Catalog / manual form container
+    const formDiv = el('div'); formDiv.id='indexer-form-area'; content.appendChild(formDiv);
 }
 
-function showAddIndexer(){
-    const form=document.getElementById('add-indexer-form'); form.textContent='';
+async function showIndexerCatalog() {
+    const area = document.getElementById('indexer-form-area'); if(!area) return;
+    area.textContent='Loading catalog...';
+    const data = await api('/indexers/catalog');
+    area.textContent='';
+    if(!data?.indexers?.length){ area.textContent='No indexers in catalog'; return; }
+
     const panel = el('div','panel');
-    panel.appendChild(el('div','panel-header','Add Indexer'));
+    const head = el('div','panel-header');
+    head.appendChild(el('span','','Indexer Catalog ('+data.total+')'));
+
+    // Category filter
+    const filterBar = el('div','btn-group'); filterBar.style.marginLeft='auto';
+    ['All','Movies','TV','Music','Anime','Books'].forEach(cat=>{
+        const btn = el('button','btn btn-ghost btn-xs',cat);
+        btn.onclick = async () => {
+            filterBar.querySelectorAll('.btn').forEach(b=>{b.classList.remove('btn-primary');b.classList.add('btn-ghost');});
+            btn.classList.add('btn-primary'); btn.classList.remove('btn-ghost');
+            const filtered = cat==='All'? await api('/indexers/catalog') : await api('/indexers/catalog?category='+cat);
+            renderCatalogGrid(body, filtered?.indexers||[]);
+        };
+        filterBar.appendChild(btn);
+    });
+    head.appendChild(filterBar);
+    panel.appendChild(head);
+
+    const body = el('div','panel-body');
+    renderCatalogGrid(body, data.indexers);
+    panel.appendChild(body);
+    area.appendChild(panel);
+    area.scrollIntoView({behavior:'smooth'});
+}
+
+function renderCatalogGrid(container, indexers) {
+    container.textContent='';
+    const grid = el('div',''); grid.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px';
+    indexers.forEach(idx => {
+        const card = el('div','stat-card'); card.style.cssText='cursor:pointer;padding:14px';
+        // Header row
+        const headerRow = el('div',''); headerRow.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:6px';
+        headerRow.appendChild(el('strong','',idx.name));
+        const privacyTag = el('span','tag '+(idx.privacy==='public'?'tag-green':idx.privacy==='semi-private'?'tag-yellow':'tag-orange'),idx.privacy);
+        headerRow.appendChild(privacyTag);
+        if(idx.protocol==='usenet') headerRow.appendChild(el('span','tag tag-cyan','Usenet'));
+        card.appendChild(headerRow);
+        // Description
+        card.appendChild(el('div','page-subtitle',idx.description));
+        // Categories
+        const catRow = el('div',''); catRow.style.cssText='display:flex;flex-wrap:wrap;gap:4px;margin-top:6px';
+        idx.categories.forEach(c=>catRow.appendChild(el('span','tag tag-blue',c)));
+        card.appendChild(catRow);
+        // Add button
+        card.onclick = () => addFromCatalog(idx);
+        grid.appendChild(card);
+    });
+    container.appendChild(grid);
+}
+
+async function addFromCatalog(idx) {
+    // Check if we have this indexer in Prowlarr
+    const disc = await api('/indexers/discover');
+    const prowlarrMatch = disc?.discovered?.find(d => d.name.toLowerCase() === idx.name.toLowerCase());
+
+    if(prowlarrMatch){
+        // Auto-add via Prowlarr torznab URL
+        const r = await apiPost('/indexers', {name: idx.name, url: prowlarrMatch.torznab_url, indexer_type: 'torznab'});
+        if(r?.added){ toast('Added '+idx.name+' via Prowlarr','success'); renderIndexers(); }
+        else toast('Failed to add (may already exist)','error');
+    } else if(idx.needs_api_key) {
+        // Show config form for private indexers
+        showIndexerConfigForm(idx);
+    } else {
+        // Public indexer without Prowlarr — needs Jackett or manual URL
+        toast(idx.name+' requires Prowlarr or Jackett for Torznab access. Import from Prowlarr above, or add the Torznab URL manually.','error');
+    }
+}
+
+function showIndexerConfigForm(idx) {
+    const area = document.getElementById('indexer-form-area'); if(!area) return;
+    // Append config form
+    const panel = el('div','panel'); panel.style.marginTop='12px';
+    panel.appendChild(el('div','panel-header','Configure '+idx.name));
+    const body = el('div','panel-body'); body.style.cssText='display:grid;gap:8px;max-width:400px';
+    body.appendChild(el('div','page-subtitle',idx.description+' — requires API key or credentials'));
+    const mkInput=(id,ph)=>{ const i=el('input','search-input'); i.id=id; i.placeholder=ph; return i; };
+    body.appendChild(mkInput('cat-url','Torznab URL'));
+    body.appendChild(mkInput('cat-key','API Key'));
+    const btn = el('button','btn btn-success','Add '+idx.name);
+    btn.onclick = async () => {
+        const url = document.getElementById('cat-url').value;
+        const key = document.getElementById('cat-key').value;
+        if(!url){ toast('Torznab URL required','error'); return; }
+        const r = await apiPost('/indexers', {name: idx.name, url: url, api_key: key, indexer_type: 'torznab'});
+        if(r?.added){ toast('Added: '+idx.name,'success'); renderIndexers(); } else toast('Failed','error');
+    };
+    body.appendChild(btn);
+    panel.appendChild(body);
+    area.appendChild(panel);
+}
+
+function showAddIndexerManual(){
+    const area = document.getElementById('indexer-form-area'); if(!area) return;
+    area.textContent='';
+    const panel = el('div','panel');
+    panel.appendChild(el('div','panel-header','Add Indexer Manually'));
     const body = el('div','panel-body'); body.style.cssText='display:grid;gap:8px;max-width:400px';
     const mkInput=(id,ph)=>{ const i=el('input','search-input'); i.id=id; i.placeholder=ph; return i; };
     body.appendChild(mkInput('idx-name','Name (e.g. 1337x)'));
@@ -590,7 +725,7 @@ function showAddIndexer(){
         if(r?.added){ toast('Added: '+r.name,'success'); renderIndexers(); } else toast('Failed to add indexer','error');
     };
     body.appendChild(btn);
-    panel.appendChild(body); form.appendChild(panel);
+    panel.appendChild(body); area.appendChild(panel);
 }
 
 // ── Settings ──────────────────────────────────────────────
