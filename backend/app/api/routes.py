@@ -1469,3 +1469,108 @@ async def serve_subtitle(file_token: str):
 async def subtitle_status():
     """Get subtitle service status."""
     return subtitle_service.stats
+
+
+# ============================================================
+# CLEANUP — automatic disk space management
+# ============================================================
+
+import shutil as _shutil
+
+_cleanup_rules: list[dict] = [
+    {"name": "Delete empty folders", "type": "empty_folders", "enabled": True},
+    {"name": "Delete sample files", "type": "samples", "enabled": True, "max_size_mb": 100},
+    {"name": "Delete non-media files", "type": "junk", "enabled": True},
+    {"name": "Max disk usage", "type": "disk_limit", "enabled": False, "limit_gb": 500},
+]
+
+JUNK_EXTENSIONS = {".txt", ".nfo", ".jpg", ".jpeg", ".png", ".url", ".html", ".htm", ".exe", ".bat", ".com"}
+
+
+@api_router.get("/cleanup/rules")
+async def get_cleanup_rules():
+    """Get current cleanup rules."""
+    return {"rules": _cleanup_rules}
+
+
+@api_router.get("/cleanup/disk")
+async def get_disk_usage():
+    """Get disk usage for media drives."""
+    result = {}
+    for name, path in [("media", settings.paths.media_root), ("downloads", settings.paths.download_dir)]:
+        try:
+            usage = _shutil.disk_usage(str(path))
+            result[name] = {
+                "path": str(path),
+                "total": usage.total,
+                "used": usage.used,
+                "free": usage.free,
+                "percent": round(usage.used / usage.total * 100, 1),
+            }
+        except Exception as e:
+            result[name] = {"path": str(path), "error": str(e)}
+    return result
+
+
+@api_router.post("/cleanup/scan")
+async def scan_for_cleanup():
+    """Scan media directories for cleanable files (dry run)."""
+    media_root = settings.paths.media_root
+    cleanable = []
+
+    for subdir in ["Movies", "TVshows", "Music", "Books"]:
+        folder = media_root / subdir
+        if not folder.exists():
+            continue
+
+        for item in folder.rglob("*"):
+            if not item.is_file():
+                continue
+            # Sample files
+            if "sample" in item.name.lower() and item.stat().st_size < 100_000_000:
+                cleanable.append({"path": str(item), "name": item.name, "size": item.stat().st_size, "reason": "sample file", "type": "samples"})
+            # Junk files (nfo, txt, jpg etc)
+            elif item.suffix.lower() in JUNK_EXTENSIONS:
+                cleanable.append({"path": str(item), "name": item.name, "size": item.stat().st_size, "reason": "non-media file", "type": "junk"})
+
+    # Empty folders
+    for subdir in ["Movies", "TVshows", "Music", "Books"]:
+        folder = media_root / subdir
+        if not folder.exists():
+            continue
+        for d in folder.rglob("*"):
+            if d.is_dir() and not any(d.iterdir()):
+                cleanable.append({"path": str(d), "name": d.name, "size": 0, "reason": "empty folder", "type": "empty_folders"})
+
+    total_size = sum(c["size"] for c in cleanable)
+    return {"items": cleanable, "total": len(cleanable), "total_size": total_size}
+
+
+class CleanupRunRequest(BaseModel):
+    types: list[str] = []  # empty_folders, samples, junk — empty = all enabled
+
+
+@api_router.post("/cleanup/run")
+async def run_cleanup(req: CleanupRunRequest):
+    """Execute cleanup based on rules. Deletes files identified by scan."""
+    scan = await scan_for_cleanup()
+    enabled_types = req.types if req.types else [r["type"] for r in _cleanup_rules if r["enabled"]]
+
+    deleted = []
+    errors = []
+    for item in scan["items"]:
+        if item["type"] not in enabled_types:
+            continue
+        try:
+            p = _Path(item["path"])
+            if p.is_file():
+                p.unlink()
+                deleted.append(item)
+            elif p.is_dir():
+                p.rmdir()  # Only removes if empty
+                deleted.append(item)
+        except Exception as e:
+            errors.append({"path": item["path"], "error": str(e)})
+
+    total_freed = sum(d["size"] for d in deleted)
+    return {"deleted": len(deleted), "errors": len(errors), "freed": total_freed}
