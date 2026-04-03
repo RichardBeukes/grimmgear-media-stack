@@ -701,3 +701,162 @@ async def plex_sections():
             return {"sections": [], "reason": f"HTTP {resp.status_code}"}
     except Exception as e:
         return {"sections": [], "reason": str(e)}
+
+
+# ============================================================
+# LIBRARY — browse what's actually on disk
+# ============================================================
+
+import os
+from pathlib import Path as _Path
+from datetime import datetime as _dt
+
+VIDEO_EXT = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".flv", ".ts", ".m2ts", ".webm"}
+AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".wma", ".aac"}
+BOOK_EXT = {".epub", ".mobi", ".azw3", ".pdf", ".cbz", ".cbr"}
+
+
+def _scan_media_folder(root: _Path, extensions: set[str]) -> list[dict]:
+    """Scan a media folder and return entries with file info."""
+    if not root.exists():
+        return []
+    entries = []
+    for item in sorted(root.iterdir()):
+        if item.name.startswith("."):
+            continue
+        entry = {"name": item.name, "path": str(item)}
+        if item.is_dir():
+            files = []
+            total_size = 0
+            for f in item.rglob("*"):
+                if f.is_file() and f.suffix.lower() in extensions:
+                    fsize = f.stat().st_size
+                    files.append({"name": f.name, "size": fsize})
+                    total_size += fsize
+            entry["type"] = "folder"
+            entry["file_count"] = len(files)
+            entry["total_size"] = total_size
+            entry["files"] = [f["name"] for f in sorted(files, key=lambda x: -x["size"])[:5]]
+            try:
+                entry["modified"] = _dt.fromtimestamp(item.stat().st_mtime).isoformat()
+            except Exception:
+                entry["modified"] = None
+        elif item.is_file() and item.suffix.lower() in extensions:
+            entry["type"] = "file"
+            entry["total_size"] = item.stat().st_size
+            entry["file_count"] = 1
+            try:
+                entry["modified"] = _dt.fromtimestamp(item.stat().st_mtime).isoformat()
+            except Exception:
+                entry["modified"] = None
+        else:
+            continue
+        entries.append(entry)
+    return entries
+
+
+@api_router.get("/library/stats")
+async def library_stats():
+    """Get overview stats for all media directories."""
+    media_root = settings.paths.media_root
+    result = {}
+    for name, subdir, exts in [
+        ("movies", "Movies", VIDEO_EXT),
+        ("tv", "TVshows", VIDEO_EXT),
+        ("music", "Music", AUDIO_EXT),
+        ("books", "Books", BOOK_EXT),
+    ]:
+        folder = media_root / subdir
+        if not folder.exists():
+            result[name] = {"folders": 0, "files": 0, "total_size": 0, "path": str(folder)}
+            continue
+        folders = 0
+        files = 0
+        total_size = 0
+        for item in folder.iterdir():
+            if item.name.startswith("."):
+                continue
+            if item.is_dir():
+                folders += 1
+                for f in item.rglob("*"):
+                    if f.is_file() and f.suffix.lower() in exts:
+                        files += 1
+                        total_size += f.stat().st_size
+            elif item.is_file() and item.suffix.lower() in exts:
+                files += 1
+                total_size += item.stat().st_size
+        result[name] = {"folders": folders, "files": files, "total_size": total_size, "path": str(folder)}
+    return result
+
+
+@api_router.get("/library/movies")
+async def library_movies():
+    """List all movie folders on disk with file info."""
+    entries = _scan_media_folder(settings.paths.movies_dir, VIDEO_EXT)
+    return {"items": entries, "total": len(entries), "path": str(settings.paths.movies_dir)}
+
+
+@api_router.get("/library/tv")
+async def library_tv():
+    """List all TV show folders on disk with file info."""
+    entries = _scan_media_folder(settings.paths.tv_dir, VIDEO_EXT)
+    return {"items": entries, "total": len(entries), "path": str(settings.paths.tv_dir)}
+
+
+@api_router.get("/library/music")
+async def library_music():
+    """List all music on disk."""
+    entries = _scan_media_folder(settings.paths.music_dir, AUDIO_EXT)
+    return {"items": entries, "total": len(entries), "path": str(settings.paths.music_dir)}
+
+
+@api_router.get("/library/books")
+async def library_books():
+    """List all books on disk."""
+    entries = _scan_media_folder(settings.paths.books_dir, BOOK_EXT)
+    return {"items": entries, "total": len(entries), "path": str(settings.paths.books_dir)}
+
+
+@api_router.get("/library/recent")
+async def library_recent(limit: int = 20):
+    """Get most recently added media across all types."""
+    recent = []
+    for subdir, media_type, exts in [
+        ("Movies", "movie", VIDEO_EXT),
+        ("TVshows", "tv", VIDEO_EXT),
+        ("Music", "music", AUDIO_EXT),
+        ("Books", "book", BOOK_EXT),
+    ]:
+        folder = settings.paths.media_root / subdir
+        if not folder.exists():
+            continue
+        for item in folder.iterdir():
+            if item.name.startswith("."):
+                continue
+            if item.is_dir() or (item.is_file() and item.suffix.lower() in exts):
+                try:
+                    mtime = item.stat().st_mtime
+                    size = 0
+                    fcount = 0
+                    if item.is_dir():
+                        for f in item.rglob("*"):
+                            if f.is_file() and f.suffix.lower() in exts:
+                                size += f.stat().st_size
+                                fcount += 1
+                    else:
+                        size = item.stat().st_size
+                        fcount = 1
+                    recent.append({
+                        "name": item.name,
+                        "media_type": media_type,
+                        "modified": _dt.fromtimestamp(mtime).isoformat(),
+                        "mtime": mtime,
+                        "total_size": size,
+                        "file_count": fcount,
+                    })
+                except Exception:
+                    pass
+    recent.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+    for r in recent:
+        r.pop("mtime", None)
+    return {"items": recent[:limit], "total": len(recent)}

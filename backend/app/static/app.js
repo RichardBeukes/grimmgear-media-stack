@@ -39,7 +39,7 @@ function navigate(page) {
     const overlay = document.querySelector('.mobile-overlay');
     if (overlay) overlay.classList.remove('active');
     // Route
-    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,indexers:renderIndexers,settings:renderSettings};
+    const routes = {dashboard:renderDashboard,movies:renderMovies,tv:renderTV,search:renderSearch,downloads:renderDownloads,library:renderLibrary,indexers:renderIndexers,settings:renderSettings};
     (routes[page]||renderDashboard)();
     window.location.hash = page;
 }
@@ -415,6 +415,135 @@ function dlStateLabel(state) {
     if(state==='checkingDL'||state==='checkingUP') return 'Checking';
     if(state==='error'||state==='missingFiles') return 'Error';
     return state;
+}
+
+// ── Library ───────────────────────────────────────────────
+async function renderLibrary() {
+    content.textContent='';
+    content.appendChild(el('div','page-title','Library'));
+    content.appendChild(el('div','page-subtitle','What\u2019s on disk in your media directories'));
+
+    const [stats,recent] = await Promise.all([api('/library/stats'),api('/library/recent?limit=25')]);
+
+    // Stats overview
+    if(stats){
+        const row = el('div','stat-row');
+        const typeMap = {movies:{label:'Movies',color:'var(--yellow)',icon:'\uD83C\uDFAC'},tv:{label:'TV Shows',color:'var(--cyan)',icon:'\uD83D\uDCFA'},music:{label:'Music',color:'var(--green)',icon:'\uD83C\uDFB5'},books:{label:'Books',color:'var(--accent)',icon:'\uD83D\uDCDA'}};
+        for(const [key,info] of Object.entries(typeMap)){
+            const s = stats[key]||{};
+            const card = el('div','stat-card'); card.style.cursor='pointer';
+            card.onclick=()=>showLibrarySection(key);
+            const bar = el('div','accent-bar'); bar.style.background=info.color; card.appendChild(bar);
+            card.appendChild(el('div','stat-label',info.icon+' '+info.label));
+            card.appendChild(el('div','stat-value',String(s.folders||0)));
+            card.appendChild(el('div','stat-sub',(s.files||0)+' files \u2022 '+fmtBytes(s.total_size||0)));
+            row.appendChild(card);
+        }
+        content.appendChild(row);
+    }
+
+    // Recently added
+    if(recent?.items?.length>0){
+        const panel = el('div','panel');
+        panel.appendChild(el('div','panel-header','Recently Added'));
+        const body = el('div','panel-body');
+        recent.items.forEach(item => {
+            const row = el('div','table-row');
+            // Type tag
+            const typeColors = {movie:'tag-yellow',tv:'tag-cyan',music:'tag-green',book:'tag-blue'};
+            const typeLabels = {movie:'Movie',tv:'TV',music:'Music',book:'Book'};
+            const tag = el('span','tag '+(typeColors[item.media_type]||'tag-blue')); tag.style.cssText='min-width:50px;text-align:center'; tag.textContent=typeLabels[item.media_type]||item.media_type; row.appendChild(tag);
+            // Name
+            const name = el('span','dl-name',item.name); row.appendChild(name);
+            // Size
+            row.appendChild(el('span','dl-stat',fmtBytes(item.total_size)));
+            // Files count
+            row.appendChild(el('span','dl-stat',item.file_count+' file'+(item.file_count!==1?'s':'')));
+            // Date
+            if(item.modified){
+                const d = new Date(item.modified);
+                const dateStr = d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+                const dateSpan = el('span',''); dateSpan.style.cssText='min-width:100px;text-align:right;color:var(--text-dim);font-size:11px'; dateSpan.textContent=dateStr; row.appendChild(dateSpan);
+            }
+            body.appendChild(row);
+        });
+        panel.appendChild(body); content.appendChild(panel);
+    }
+
+    // Section containers for drill-down
+    const sectionDiv = el('div'); sectionDiv.id='library-section'; content.appendChild(sectionDiv);
+}
+
+async function showLibrarySection(type) {
+    const sectionDiv = document.getElementById('library-section');
+    if(!sectionDiv) return;
+    sectionDiv.textContent='Loading...';
+
+    const endpointMap = {movies:'/library/movies',tv:'/library/tv',music:'/library/music',books:'/library/books'};
+    const labelMap = {movies:'Movies',tv:'TV Shows',music:'Music',books:'Books'};
+    const data = await api(endpointMap[type]);
+    sectionDiv.textContent='';
+
+    if(!data?.items?.length){
+        sectionDiv.appendChild(el('div','empty','No '+labelMap[type]+' found in '+data?.path));
+        return;
+    }
+
+    const panel = el('div','panel');
+    const head = el('div','panel-header',labelMap[type]+' on Disk ('+data.total+')');
+    // Path display
+    const pathTag = el('span','tag tag-blue',data.path||''); head.appendChild(pathTag);
+    panel.appendChild(head);
+    const body = el('div','panel-body');
+
+    // Sort by modified desc
+    const items = data.items.sort((a,b) => (b.modified||'').localeCompare(a.modified||''));
+
+    items.forEach(item => {
+        const row = el('div','table-row'); row.style.cursor='pointer';
+
+        // Folder/file icon
+        const icon = el('span',''); icon.style.cssText='min-width:20px;text-align:center'; icon.textContent=item.type==='folder'?'\uD83D\uDCC1':'\uD83C\uDFA5'; row.appendChild(icon);
+
+        // Name
+        const name = el('span','dl-name',item.name); name.title=item.name; row.appendChild(name);
+
+        // File count
+        if(item.file_count > 0){
+            row.appendChild(el('span','dl-stat',item.file_count+' file'+(item.file_count!==1?'s':'')));
+        }
+
+        // Size
+        row.appendChild(el('span','dl-stat',fmtBytes(item.total_size)));
+
+        // Modified date
+        if(item.modified){
+            const d = new Date(item.modified);
+            const dateSpan = el('span',''); dateSpan.style.cssText='min-width:100px;text-align:right;color:var(--text-dim);font-size:11px';
+            dateSpan.textContent=d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+            row.appendChild(dateSpan);
+        }
+
+        // Show files on click
+        if(item.files?.length > 0){
+            row.onclick = () => {
+                const existing = row.nextElementSibling;
+                if(existing?.classList?.contains('lib-files')){ existing.remove(); return; }
+                const filesDiv = el('div','lib-files');
+                filesDiv.style.cssText='padding:4px 0 8px 30px;font-size:11px;color:var(--text-dim)';
+                item.files.forEach(f => { filesDiv.appendChild(el('div','','\u2022 '+f)); });
+                row.after(filesDiv);
+            };
+        }
+
+        body.appendChild(row);
+    });
+
+    panel.appendChild(body);
+    sectionDiv.appendChild(panel);
+
+    // Scroll to section
+    sectionDiv.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 // ── Indexers ──────────────────────────────────────────────
@@ -795,7 +924,7 @@ setInterval(async()=>{
 // ── Hash-based routing ────────────────────────────────────
 function initFromHash() {
     const hash = window.location.hash.replace('#','');
-    if(hash && ['dashboard','movies','tv','search','downloads','indexers','settings'].includes(hash)){
+    if(hash && ['dashboard','movies','tv','search','downloads','library','indexers','settings'].includes(hash)){
         navigate(hash);
     } else {
         navigate('dashboard');
