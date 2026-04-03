@@ -1320,7 +1320,118 @@ function initMobile() {
     }
 }
 
+// ── First-Run Setup Wizard ────────────────────────────────
+async function checkFirstRun() {
+    const status = await api('/setup/status');
+    if(status?.needs_setup) {
+        showSetupWizard();
+        return true;
+    }
+    return false;
+}
+
+async function showSetupWizard() {
+    content.textContent='';
+    // Hide sidebar during setup
+    document.getElementById('sidebar').style.display='none';
+    document.querySelector('.hamburger').style.display='none';
+
+    const wizard = el('div',''); wizard.style.cssText='max-width:500px;margin:40px auto;padding:0 20px';
+
+    // Header
+    const header = el('div',''); header.style.cssText='text-align:center;margin-bottom:32px';
+    const logo = el('div','brand-icon'); logo.style.cssText='width:60px;height:60px;font-size:28px;margin:0 auto 12px;border-radius:12px;display:flex;align-items:center;justify-content:center';
+    logo.textContent='G'; header.appendChild(logo);
+    header.appendChild(el('div','page-title','Welcome to Mediarr'));
+    header.appendChild(el('div','page-subtitle','One system. Every media type. Let\'s set it up.'));
+    wizard.appendChild(header);
+
+    // Step 1: Create admin account
+    const step1 = el('div','panel');
+    step1.appendChild(el('div','panel-header','Step 1: Create Admin Account'));
+    const body1 = el('div','panel-body'); body1.style.cssText='display:grid;gap:10px';
+    const mkInput=(id,ph,type)=>{ const i=el('input','search-input'); i.id=id; i.placeholder=ph; if(type)i.type=type; return i; };
+    body1.appendChild(mkInput('setup-user','Username'));
+    body1.appendChild(mkInput('setup-pass','Password','password'));
+    body1.appendChild(mkInput('setup-email','Email (optional)','email'));
+    const createBtn = el('button','btn btn-primary','Create Account');
+    createBtn.onclick = async () => {
+        const user = document.getElementById('setup-user').value;
+        const pass = document.getElementById('setup-pass').value;
+        if(!user||!pass){ toast('Username and password required','error'); return; }
+        const r = await apiPost('/auth/register',{username:user,password:pass,email:document.getElementById('setup-email').value});
+        if(r?.registered){
+            toast('Admin account created: '+r.username,'success');
+            createBtn.textContent='Done!'; createBtn.className='btn btn-success'; createBtn.disabled=true;
+            step2.style.opacity='1'; step2.style.pointerEvents='auto';
+        } else toast('Failed to create account','error');
+    };
+    body1.appendChild(createBtn);
+    step1.appendChild(body1); wizard.appendChild(step1);
+
+    // Step 2: Import indexers
+    const step2 = el('div','panel'); step2.style.cssText='opacity:0.5;pointer-events:none;margin-top:12px';
+    step2.appendChild(el('div','panel-header','Step 2: Configure Indexers'));
+    const body2 = el('div','panel-body');
+    body2.appendChild(el('div','page-subtitle','Import indexers from Prowlarr (auto-detected) or add manually later.'));
+    const importBtn = el('button','btn btn-primary','Import from Prowlarr');
+    importBtn.onclick = async () => {
+        importBtn.textContent='Importing...';
+        const r = await apiPost('/indexers/import-from-prowlarr');
+        if(r?.imported > 0){
+            toast('Imported '+r.imported+' indexers!','success');
+            importBtn.textContent=r.imported+' imported!'; importBtn.className='btn btn-success'; importBtn.disabled=true;
+        } else {
+            toast('No Prowlarr found. You can add indexers later from Settings.','');
+            importBtn.textContent='Skip (add later)'; importBtn.className='btn btn-ghost';
+        }
+        step3.style.opacity='1'; step3.style.pointerEvents='auto';
+    };
+    const skipIdx = el('button','btn btn-ghost','Skip');
+    skipIdx.style.marginLeft='8px';
+    skipIdx.onclick = () => { step3.style.opacity='1'; step3.style.pointerEvents='auto'; };
+    const btnRow2 = el('div','btn-group'); btnRow2.appendChild(importBtn); btnRow2.appendChild(skipIdx);
+    body2.appendChild(btnRow2);
+    step2.appendChild(body2); wizard.appendChild(step2);
+
+    // Step 3: Verify media paths
+    const step3 = el('div','panel'); step3.style.cssText='opacity:0.5;pointer-events:none;margin-top:12px';
+    step3.appendChild(el('div','panel-header','Step 3: Media Library'));
+    const body3 = el('div','panel-body');
+    const stats = await api('/library/stats');
+    if(stats){
+        let totalFiles = 0;
+        for(const [key,info] of Object.entries(stats)){
+            totalFiles += info.files||0;
+            const row = el('div','table-row');
+            row.appendChild(el('span','',key.charAt(0).toUpperCase()+key.slice(1)));
+            const spacer=el('span',''); spacer.style.flex='1'; row.appendChild(spacer);
+            row.appendChild(el('span','tag '+(info.files>0?'tag-green':'tag-orange'),info.files+' files'));
+            body3.appendChild(row);
+        }
+        if(totalFiles>0) body3.appendChild(el('div','page-subtitle','Media found! Your library is ready.'));
+        else body3.appendChild(el('div','page-subtitle','No media found yet. Add files to D:\\Media or change the path in settings.'));
+    }
+    const finishBtn = el('button','btn btn-success','Start Using Mediarr');
+    finishBtn.style.marginTop='12px';
+    finishBtn.onclick = () => {
+        document.getElementById('sidebar').style.display='';
+        document.querySelector('.hamburger').style.display='';
+        navigate('dashboard');
+    };
+    body3.appendChild(finishBtn);
+    step3.appendChild(body3); wizard.appendChild(step3);
+
+    content.appendChild(wizard);
+}
+
 // ── Init ──────────────────────────────────────────────────
-initMobile();
-initFromHash();
+async function init() {
+    initMobile();
+    const isFirstRun = await checkFirstRun();
+    if(!isFirstRun) {
+        initFromHash();
+    }
+}
+init();
 window.onhashchange = initFromHash;
