@@ -469,3 +469,43 @@ class Backup(Base):
     size: Mapped[int] = mapped_column(Integer, default=0)
     backup_type: Mapped[str] = mapped_column(String(20), default="manual")  # manual, scheduled
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+# ============================================================
+# Metadata Profiles
+# ============================================================
+
+class MetadataProfile(Base):
+    """Per-media-type metadata download settings."""
+    __tablename__ = "metadata_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_type: Mapped[str] = mapped_column(String(20), unique=True)  # movie, tv, music, book
+    download_posters: Mapped[bool] = mapped_column(Boolean, default=True)
+    download_fanart: Mapped[bool] = mapped_column(Boolean, default=True)
+    download_banners: Mapped[bool] = mapped_column(Boolean, default=False)
+    write_nfo: Mapped[bool] = mapped_column(Boolean, default=True)
+    nfo_format: Mapped[str] = mapped_column(String(20), default="kodi")  # kodi, plex, emby
+
+
+# ============================================================
+# Connect / Custom Scripts
+# ============================================================
+
+class ConnectClient(Base):
+    """Custom scripts + notification connections triggered on events."""
+    __tablename__ = "connect_clients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200))
+    client_type: Mapped[str] = mapped_column(String(50))  # custom_script, webhook, discord, telegram, email, plex, emby, jellyfin, kodi, slack
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)
+    on_grab: Mapped[bool] = mapped_column(Boolean, default=False)
+    on_download: Mapped[bool] = mapped_column(Boolean, default=True)
+    on_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
+    on_rename: Mapped[bool] = mapped_column(Boolean, default=False)
+    on_delete: Mapped[bool] = mapped_column(Boolean, default=False)
+    on_health: Mapped[bool] = mapped_column(Boolean, default=False)
+    on_app_update: Mapped[bool] = mapped_column(Boolean, default=False)
+    tags: Mapped[Optional[str]] = mapped_column(JSON, nullable=True)

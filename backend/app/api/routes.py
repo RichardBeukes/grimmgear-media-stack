@@ -22,6 +22,7 @@ from app.db.models import (
     SystemSetting, RootFolder, DownloadClient as DownloadClientModel, NotificationAgent,
     BlocklistItem, Tag, TagAssignment, CustomFormat, ImportList,
     EventLog, NamingConfig, Backup,
+    MetadataProfile, ConnectClient,
 )
 from app.db.session import get_db
 from app.modules.registry import registry
@@ -3403,6 +3404,423 @@ async def delete_backup(backup_id: int, db: AsyncSession = Depends(get_db)):
     await db.delete(backup)
     await db.commit()
     return {"deleted": True}
+
+
+# ============================================================
+# METADATA AGENTS — NFO files, poster/fanart downloads
+# ============================================================
+
+@api_router.get("/metadata/profiles")
+async def get_metadata_profiles(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(MetadataProfile))
+    profiles = result.scalars().all()
+    existing = {p.media_type: p for p in profiles}
+    defaults = ["movie", "tv", "music", "book"]
+    out = []
+    for mt in defaults:
+        if mt in existing:
+            p = existing[mt]
+            out.append({"id": p.id, "media_type": mt, "download_posters": p.download_posters,
+                        "download_fanart": p.download_fanart, "download_banners": p.download_banners,
+                        "write_nfo": p.write_nfo, "nfo_format": p.nfo_format})
+        else:
+            out.append({"id": None, "media_type": mt, "download_posters": True,
+                        "download_fanart": True, "download_banners": False,
+                        "write_nfo": True, "nfo_format": "kodi"})
+    return out
+
+
+class MetadataProfileUpdate(BaseModel):
+    media_type: str
+    download_posters: bool = True
+    download_fanart: bool = True
+    download_banners: bool = False
+    write_nfo: bool = True
+    nfo_format: str = "kodi"
+
+@api_router.put("/metadata/profiles")
+async def update_metadata_profile(req: MetadataProfileUpdate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(MetadataProfile).where(MetadataProfile.media_type == req.media_type))
+    p = result.scalar_one_or_none()
+    if p:
+        p.download_posters = req.download_posters
+        p.download_fanart = req.download_fanart
+        p.download_banners = req.download_banners
+        p.write_nfo = req.write_nfo
+        p.nfo_format = req.nfo_format
+    else:
+        p = MetadataProfile(**req.dict())
+        db.add(p)
+    await db.commit()
+    return {"saved": True}
+
+
+@api_router.post("/metadata/refresh/{media_type}/{media_id}")
+async def refresh_metadata(media_type: str, media_id: int, db: AsyncSession = Depends(get_db)):
+    """Re-download metadata (poster, fanart, NFO) for a specific item."""
+    import httpx as _httpx
+    import os
+
+    if media_type == "movie":
+        item = await db.get(Movie, media_id)
+        if not item:
+            raise HTTPException(404, "Movie not found")
+        if item.tmdb_id:
+            detail = await tmdb.get_movie(item.tmdb_id)
+            if detail:
+                item.overview = detail.get("overview", item.overview)
+                if detail.get("poster_path"):
+                    item.poster_url = f"https://image.tmdb.org/t/p/w500{detail['poster_path']}"
+                if detail.get("backdrop_path"):
+                    item.fanart_url = f"https://image.tmdb.org/t/p/original{detail['backdrop_path']}"
+
+                # Download poster to disk if path set
+                if item.path and item.poster_url:
+                    poster_path = os.path.join(item.path, "poster.jpg")
+                    try:
+                        async with _httpx.AsyncClient(timeout=15.0) as client:
+                            resp = await client.get(item.poster_url)
+                            if resp.status_code == 200:
+                                os.makedirs(os.path.dirname(poster_path), exist_ok=True)
+                                with open(poster_path, "wb") as f:
+                                    f.write(resp.content)
+                    except Exception:
+                        pass
+
+                # Write NFO
+                if item.path:
+                    nfo_path = os.path.join(item.path, "movie.nfo")
+                    try:
+                        nfo = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>{item.title}</title>
+  <year>{item.year or ''}</year>
+  <tmdbid>{item.tmdb_id}</tmdbid>
+  <plot>{(item.overview or '').replace('&','&amp;').replace('<','&lt;')}</plot>
+  <thumb>{item.poster_url or ''}</thumb>
+  <fanart>{item.fanart_url or ''}</fanart>
+</movie>"""
+                        os.makedirs(os.path.dirname(nfo_path), exist_ok=True)
+                        with open(nfo_path, "w", encoding="utf-8") as f:
+                            f.write(nfo)
+                    except Exception:
+                        pass
+
+                await db.commit()
+                log = EventLog(category="media", level="info", message=f"Metadata refreshed: {item.title}")
+                db.add(log)
+                await db.commit()
+                return {"refreshed": True, "title": item.title}
+
+    return {"refreshed": False, "message": "Not supported or not found"}
+
+
+# ============================================================
+# FILE MANAGEMENT — hardlinks, copy mode, recycle bin
+# ============================================================
+
+@api_router.get("/settings/filemanagement")
+async def get_file_management(db: AsyncSession = Depends(get_db)):
+    """File management settings like Sonarr."""
+    keys = ["import_mode", "recycle_bin", "recycle_bin_cleanup_days", "chmod_folder", "chmod_file",
+            "chown_user", "chown_group", "create_empty_folders", "delete_empty_folders"]
+    settings = {}
+    for key in keys:
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == f"file_{key}"))
+        s = result.scalar_one_or_none()
+        settings[key] = s.value if s else None
+
+    return {
+        "import_mode": settings.get("import_mode") or "hardlink",  # hardlink, copy, move
+        "recycle_bin": settings.get("recycle_bin") or "",
+        "recycle_bin_cleanup_days": int(settings.get("recycle_bin_cleanup_days") or 7),
+        "chmod_folder": settings.get("chmod_folder") or "755",
+        "chmod_file": settings.get("chmod_file") or "644",
+        "chown_user": settings.get("chown_user") or "",
+        "chown_group": settings.get("chown_group") or "",
+        "create_empty_folders": (settings.get("create_empty_folders") or "true") == "true",
+        "delete_empty_folders": (settings.get("delete_empty_folders") or "true") == "true",
+    }
+
+
+class FileManagementUpdate(BaseModel):
+    import_mode: str = "hardlink"
+    recycle_bin: str = ""
+    recycle_bin_cleanup_days: int = 7
+    chmod_folder: str = "755"
+    chmod_file: str = "644"
+    chown_user: str = ""
+    chown_group: str = ""
+    create_empty_folders: bool = True
+    delete_empty_folders: bool = True
+
+@api_router.put("/settings/filemanagement")
+async def update_file_management(req: FileManagementUpdate, db: AsyncSession = Depends(get_db)):
+    async def _set(key, value):
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == f"file_{key}"))
+        s = result.scalar_one_or_none()
+        if s:
+            s.value = str(value)
+        else:
+            db.add(SystemSetting(key=f"file_{key}", value=str(value), category="files"))
+
+    await _set("import_mode", req.import_mode)
+    await _set("recycle_bin", req.recycle_bin)
+    await _set("recycle_bin_cleanup_days", req.recycle_bin_cleanup_days)
+    await _set("chmod_folder", req.chmod_folder)
+    await _set("chmod_file", req.chmod_file)
+    await _set("chown_user", req.chown_user)
+    await _set("chown_group", req.chown_group)
+    await _set("create_empty_folders", str(req.create_empty_folders).lower())
+    await _set("delete_empty_folders", str(req.delete_empty_folders).lower())
+    await db.commit()
+    return {"saved": True}
+
+
+# ============================================================
+# CONNECT — notifications + custom scripts (like Sonarr Connect)
+# ============================================================
+
+@api_router.get("/connect")
+async def get_connect_clients(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ConnectClient).order_by(ConnectClient.name))
+    return [{"id": c.id, "name": c.name, "client_type": c.client_type, "enabled": c.enabled,
+             "config": c.config, "on_grab": c.on_grab, "on_download": c.on_download,
+             "on_upgrade": c.on_upgrade, "on_rename": c.on_rename, "on_delete": c.on_delete,
+             "on_health": c.on_health, "on_app_update": c.on_app_update, "tags": c.tags}
+            for c in result.scalars().all()]
+
+
+class ConnectClientCreate(BaseModel):
+    name: str
+    client_type: str
+    enabled: bool = True
+    config: dict = {}
+    on_grab: bool = False
+    on_download: bool = True
+    on_upgrade: bool = False
+    on_rename: bool = False
+    on_delete: bool = False
+    on_health: bool = False
+    on_app_update: bool = False
+
+@api_router.post("/connect")
+async def create_connect_client(req: ConnectClientCreate, db: AsyncSession = Depends(get_db)):
+    c = ConnectClient(name=req.name, client_type=req.client_type, enabled=req.enabled,
+                      config=req.config, on_grab=req.on_grab, on_download=req.on_download,
+                      on_upgrade=req.on_upgrade, on_rename=req.on_rename, on_delete=req.on_delete,
+                      on_health=req.on_health, on_app_update=req.on_app_update)
+    db.add(c)
+    await db.commit()
+    return {"id": c.id, "name": c.name, "created": True}
+
+
+@api_router.delete("/connect/{client_id}")
+async def delete_connect_client(client_id: int, db: AsyncSession = Depends(get_db)):
+    c = await db.get(ConnectClient, client_id)
+    if not c:
+        raise HTTPException(404, "Not found")
+    await db.delete(c)
+    await db.commit()
+    return {"deleted": True}
+
+
+@api_router.post("/connect/{client_id}/test")
+async def test_connect_client(client_id: int, db: AsyncSession = Depends(get_db)):
+    """Test a connect client (send test notification)."""
+    import httpx as _httpx
+    c = await db.get(ConnectClient, client_id)
+    if not c:
+        raise HTTPException(404, "Not found")
+
+    config = c.config or {}
+    if c.client_type == "webhook":
+        url = config.get("url", "")
+        if url:
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, json={"event": "test", "message": "GrimmGear Mediarr test"})
+                    return {"success": resp.status_code < 400, "status_code": resp.status_code}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    elif c.client_type == "discord":
+        webhook_url = config.get("webhook_url", "")
+        if webhook_url:
+            try:
+                async with _httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(webhook_url, json={"content": "GrimmGear Mediarr test notification"})
+                    return {"success": resp.status_code < 400}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    elif c.client_type == "custom_script":
+        script_path = config.get("path", "")
+        if script_path:
+            import subprocess
+            try:
+                result = subprocess.run([script_path, "Test"], capture_output=True, text=True, timeout=30)
+                return {"success": result.returncode == 0, "output": result.stdout[:500]}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+    return {"success": False, "message": "No testable config"}
+
+
+# ============================================================
+# AUTO-UPDATE — check GitHub for updates
+# ============================================================
+
+@api_router.get("/system/updates")
+async def check_updates():
+    """Check GitHub for new releases."""
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get("https://api.github.com/repos/RichardBeukes/grimmgear-media-stack/releases/latest",
+                                    headers={"Accept": "application/vnd.github.v3+json"})
+            if resp.status_code == 200:
+                release = resp.json()
+                return {
+                    "current_version": settings.version,
+                    "latest_version": release.get("tag_name", ""),
+                    "release_name": release.get("name", ""),
+                    "published": release.get("published_at", ""),
+                    "body": (release.get("body") or "")[:1000],
+                    "url": release.get("html_url", ""),
+                    "update_available": release.get("tag_name", "") != settings.version,
+                }
+            elif resp.status_code == 404:
+                return {"current_version": settings.version, "update_available": False, "message": "No releases found"}
+    except Exception as e:
+        return {"current_version": settings.version, "update_available": False, "error": str(e)}
+    return {"current_version": settings.version, "update_available": False}
+
+
+# ============================================================
+# MEDIA PLAYER — fix browser playback
+# ============================================================
+
+@api_router.get("/player/browse")
+async def stream_browse(path: str = Query("", description="Subdirectory to browse")):
+    """Browse media folders for streaming. Returns playable files."""
+    import os
+    from pathlib import Path as _P
+
+    media_root = _P(str(settings.paths.media_root))
+    if path:
+        browse_path = media_root / path
+    else:
+        browse_path = media_root
+
+    if not browse_path.exists():
+        return {"items": [], "path": str(browse_path), "error": "Path not found"}
+
+    # Security: prevent traversal
+    try:
+        browse_path.resolve().relative_to(media_root.resolve())
+    except ValueError:
+        raise HTTPException(403, "Access denied")
+
+    VIDEO_EXT = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".flv", ".ts", ".webm"}
+    AUDIO_EXT = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".ape"}
+    ALL_MEDIA = VIDEO_EXT | AUDIO_EXT
+
+    items = []
+    for entry in sorted(browse_path.iterdir()):
+        if entry.name.startswith("."):
+            continue
+        rel = str(entry.relative_to(media_root)).replace("\\", "/")
+        if entry.is_dir():
+            items.append({"name": entry.name, "type": "folder", "path": rel})
+        elif entry.is_file() and entry.suffix.lower() in ALL_MEDIA:
+            import base64
+            token = base64.urlsafe_b64encode(rel.encode()).decode()
+            items.append({
+                "name": entry.name, "type": "file", "path": rel,
+                "size": entry.stat().st_size,
+                "ext": entry.suffix.lower().lstrip("."),
+                "stream_url": f"/api/player/play/{token}",
+                "is_video": entry.suffix.lower() in VIDEO_EXT,
+                "is_audio": entry.suffix.lower() in AUDIO_EXT,
+            })
+    return {"items": items, "path": str(browse_path.relative_to(media_root)), "media_root": str(media_root)}
+
+
+@api_router.get("/player/play/{token}")
+async def stream_play(token: str, request: Request):
+    """Stream a media file by token. Supports HTTP Range for seeking."""
+    import base64, os, mimetypes
+    from fastapi.responses import Response
+
+    try:
+        rel_path = base64.urlsafe_b64decode(token).decode()
+    except Exception:
+        raise HTTPException(400, "Invalid token")
+
+    media_root = str(settings.paths.media_root)
+    file_path = os.path.join(media_root, rel_path)
+
+    # Security check
+    if ".." in rel_path or not os.path.abspath(file_path).startswith(os.path.abspath(media_root)):
+        raise HTTPException(403, "Access denied")
+
+    if not os.path.exists(file_path):
+        raise HTTPException(404, "File not found")
+
+    file_size = os.path.getsize(file_path)
+    content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+    # Handle MKV → MP4 transcode for browser playback
+    if file_path.lower().endswith(".mkv"):
+        content_type = "video/mp4"
+        from app.core.transcode.transcoder import transcoder
+        return StreamingResponse(
+            transcoder.stream_transcode(file_path),
+            media_type=content_type,
+            headers={"Accept-Ranges": "none", "Content-Disposition": f"inline; filename=\"{os.path.basename(file_path)}.mp4\""},
+        )
+
+    # Range request support for seeking
+    range_header = request.headers.get("range")
+    if range_header:
+        range_match = range_header.replace("bytes=", "").split("-")
+        start = int(range_match[0]) if range_match[0] else 0
+        end = int(range_match[1]) if len(range_match) > 1 and range_match[1] else file_size - 1
+        chunk_size = end - start + 1
+
+        def file_reader():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    read_size = min(65536, remaining)
+                    data = f.read(read_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            file_reader(), status_code=206, media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(chunk_size),
+            },
+        )
+
+    # Full file
+    def full_reader():
+        with open(file_path, "rb") as f:
+            while True:
+                data = f.read(65536)
+                if not data:
+                    break
+                yield data
+
+    return StreamingResponse(
+        full_reader(), media_type=content_type,
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(file_size)},
+    )
 
 
 # ── Track app start time for uptime ──

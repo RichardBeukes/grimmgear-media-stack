@@ -1167,6 +1167,113 @@ function showImportListEditor(container) {
     document.body.appendChild(modal);
 }
 
+// ── Connect — notifications + custom scripts ─────────────
+async function renderConnect() {
+    content.textContent = '';
+    content.appendChild(el('h1','page-title','Connect'));
+    content.appendChild(el('p','page-subtitle','Notifications, media servers, and custom scripts triggered on events'));
+
+    var data = await api('/connect');
+    var panel = el('div','panel');
+    var head = el('div','panel-header');
+    head.appendChild(el('span','','Connections'));
+    var addBtn = el('button','btn btn-sm btn-success','+ Add Connection');
+    head.appendChild(addBtn);
+    panel.appendChild(head);
+    var body = el('div','panel-body');
+
+    if (data && data.length) {
+        for (var i = 0; i < data.length; i++) {
+            (function(c) {
+                var row = el('div','table-row');
+                row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+                row.appendChild(el('span','tag ' + (c.enabled ? 'tag-green' : 'tag-red'), c.enabled ? 'ON' : 'OFF'));
+                row.appendChild(el('span','tag tag-cyan', c.client_type));
+                var info = el('span','',c.name); info.style.flex = '1'; row.appendChild(info);
+                var events = [];
+                if (c.on_grab) events.push('Grab');
+                if (c.on_download) events.push('Download');
+                if (c.on_upgrade) events.push('Upgrade');
+                if (c.on_rename) events.push('Rename');
+                if (c.on_delete) events.push('Delete');
+                if (c.on_health) events.push('Health');
+                row.appendChild(el('span','text-dim', events.join(', ') || 'No events'));
+                var testBtn = el('button','btn btn-sm','Test');
+                testBtn.onclick = async function() {
+                    var r = await apiPost('/connect/' + c.id + '/test', {});
+                    toast(r && r.success ? 'Test passed' : 'Test failed');
+                };
+                row.appendChild(testBtn);
+                var delBtn = el('button','btn btn-sm btn-danger','Remove');
+                delBtn.onclick = async function() { await apiDelete('/connect/' + c.id); renderConnect(); };
+                row.appendChild(delBtn);
+                body.appendChild(row);
+            })(data[i]);
+        }
+    } else {
+        body.appendChild(el('p','text-dim','No connections configured. Add Discord, webhooks, Plex, custom scripts, etc.'));
+    }
+    panel.appendChild(body);
+    content.appendChild(panel);
+
+    // Available types
+    var types = [
+        ['discord','Discord','Webhook notifications to Discord'],
+        ['telegram','Telegram','Bot notifications to Telegram'],
+        ['slack','Slack','Webhook to Slack'],
+        ['webhook','Webhook','Generic HTTP webhook (POST JSON)'],
+        ['email','Email','Email via SMTP'],
+        ['custom_script','Custom Script','Run a script on events'],
+        ['plex','Plex','Notify Plex to scan'],
+        ['emby','Emby','Notify Emby to scan'],
+        ['jellyfin','Jellyfin','Notify Jellyfin to scan'],
+        ['kodi','Kodi','Notify Kodi to update'],
+    ];
+
+    addBtn.onclick = function() {
+        var modal = el('div','modal-overlay');
+        modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+        var box = el('div','modal-box');
+        box.appendChild(el('h3','','Add Connection'));
+        var form = el('div','form-grid');
+        form.appendChild(el('label','','Name'));
+        var nameIn = el('input','input'); nameIn.placeholder = 'e.g., Discord Notifications'; form.appendChild(nameIn);
+        form.appendChild(el('label','','Type'));
+        var typeSelect = el('select','input');
+        for (var j = 0; j < types.length; j++) { var opt = el('option','',types[j][1]); opt.value = types[j][0]; typeSelect.appendChild(opt); }
+        form.appendChild(typeSelect);
+        form.appendChild(el('label','','URL / Webhook / Path'));
+        var urlIn = el('input','input'); urlIn.placeholder = 'https://discord.com/api/webhooks/...'; form.appendChild(urlIn);
+        form.appendChild(el('label','','Events'));
+        var evDiv = el('div',''); evDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px';
+        var eventNames = ['on_grab','on_download','on_upgrade','on_rename','on_delete','on_health'];
+        var eventChecks = {};
+        for (var j = 0; j < eventNames.length; j++) {
+            var lbl = el('label','',eventNames[j].replace('on_',''));
+            lbl.style.cssText = 'font-size:12px;display:flex;align-items:center;gap:4px';
+            var cb = el('input',''); cb.type = 'checkbox';
+            if (eventNames[j] === 'on_download') cb.checked = true;
+            eventChecks[eventNames[j]] = cb;
+            lbl.prepend(cb);
+            evDiv.appendChild(lbl);
+        }
+        form.appendChild(evDiv);
+        box.appendChild(form);
+        var saveBtn2 = el('button','btn btn-success','Save');
+        saveBtn2.style.marginTop = '8px';
+        saveBtn2.onclick = async function() {
+            var payload = { name: nameIn.value, client_type: typeSelect.value,
+                config: {url: urlIn.value, webhook_url: urlIn.value, path: urlIn.value} };
+            for (var k in eventChecks) payload[k] = eventChecks[k].checked;
+            await apiPost('/connect', payload);
+            modal.remove(); renderConnect();
+        };
+        box.appendChild(saveBtn2);
+        modal.appendChild(box);
+        document.body.appendChild(modal);
+    };
+}
+
 // ── Music ────────────────────────────────────────────────
 // ── Music / Books / Comics — use shared renderMediaTab ──
 async function renderMusic() {

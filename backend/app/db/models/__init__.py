@@ -8,6 +8,7 @@ from .media import (
     SystemSetting, RootFolder, DownloadClient, NotificationAgent,
     BlocklistItem, Tag, TagAssignment, CustomFormat, ImportList,
     EventLog, NamingConfig, Backup,
+    MetadataProfile, ConnectClient,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "SystemSetting", "RootFolder", "DownloadClient", "NotificationAgent",
     "BlocklistItem", "Tag", "TagAssignment", "CustomFormat", "ImportList",
     "EventLog", "NamingConfig", "Backup",
+    "MetadataProfile", "ConnectClient",
 ]

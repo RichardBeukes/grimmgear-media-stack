@@ -42,7 +42,7 @@ function navigate(page) {
     const overlay = document.querySelector('.mobile-overlay');
     if (overlay) overlay.classList.remove('active');
     // Route
-    const pageMap = {dashboard:'renderDashboard',movies:'renderMovies',tv:'renderTV',music:'renderMusic',books:'renderBooks',comics:'renderComics',search:'renderSearch',downloads:'renderDownloads',library:'renderLibrary',calendar:'renderCalendar',requests:'renderRequests',indexers:'renderIndexers',blocklist:'renderBlocklist',system:'renderSystem',settings:'renderSettings'};
+    const pageMap = {dashboard:'renderDashboard',movies:'renderMovies',tv:'renderTV',music:'renderMusic',books:'renderBooks',comics:'renderComics',search:'renderSearch',downloads:'renderDownloads',library:'renderLibrary',calendar:'renderCalendar',requests:'renderRequests',indexers:'renderIndexers',blocklist:'renderBlocklist',connect:'renderConnect',system:'renderSystem',settings:'renderSettings'};
     const fnName = pageMap[page];
     const fn = fnName ? window[fnName] : null;
     if (fn && typeof fn === 'function') {
@@ -1730,7 +1730,7 @@ setInterval(async()=>{
 // ── Hash-based routing ────────────────────────────────────
 function initFromHash() {
     const hash = window.location.hash.replace('#','');
-    const validPages = ['dashboard','movies','tv','music','books','comics','search','downloads','library','calendar','requests','indexers','blocklist','system','settings'];
+    const validPages = ['dashboard','movies','tv','music','books','comics','search','downloads','library','calendar','requests','indexers','blocklist','connect','system','settings'];
     if(hash && validPages.includes(hash)){
         navigate(hash);
     } else {
